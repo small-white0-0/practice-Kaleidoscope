@@ -13,7 +13,16 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/IR/PassManager.h"                    // TheFPM
+#include "llvm/Transforms/Scalar/LoopPassManager.h"  // TheLAM
+#include "llvm/Analysis/CGSCCPassManager.h"        // TheCGAM
+#include "llvm/Passes/PassBuilder.h"                 // PassBuilder
+#include "llvm/Passes/StandardInstrumentations.h"  // StandardInstrumentations
 
+#include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Transforms/Scalar/GVN.h"
+#include "llvm/Transforms/Scalar/Reassociate.h"
+#include "llvm/Transforms/Scalar/SimplifyCFG.h"
 
 class CodeGenContext;
 
@@ -531,6 +540,17 @@ public:
     std::unique_ptr<llvm::Module> TheModule;
     std::unique_ptr<llvm::IRBuilder<> > Builder;
 
+    // llvm pass 对象
+    std::unique_ptr<llvm::FunctionPassManager> TheFPM;
+
+    std::unique_ptr<llvm::ModuleAnalysisManager> TheMAM;
+    std::unique_ptr<llvm::FunctionAnalysisManager> TheFAM;
+    std::unique_ptr<llvm::LoopAnalysisManager> TheLAM;
+    std::unique_ptr<llvm::CGSCCAnalysisManager> TheCGAM;
+    std::unique_ptr<llvm::PassInstrumentationCallbacks> ThePIC;
+    std::unique_ptr<llvm::StandardInstrumentations> TheSI;
+
+
     // 符号表
     std::vector<std::map<std::string, llvm::Value *> > NamedValuesStack;
 
@@ -541,6 +561,34 @@ public:
         TheContext = std::make_unique<llvm::LLVMContext>();
         TheModule = std::make_unique<llvm::Module>("my_module", *TheContext);
         Builder = std::make_unique<llvm::IRBuilder<> >(*TheContext);
+
+        TheFPM = std::make_unique<llvm::FunctionPassManager>();
+        TheMAM = std::make_unique<llvm::ModuleAnalysisManager>();
+        TheFAM = std::make_unique<llvm::FunctionAnalysisManager>();
+        TheLAM = std::make_unique<llvm::LoopAnalysisManager>();
+        TheCGAM = std::make_unique<llvm::CGSCCAnalysisManager>();
+        ThePIC = std::make_unique<llvm::PassInstrumentationCallbacks>();
+        TheSI = std::make_unique<llvm::StandardInstrumentations>(*TheContext,/*debugging*/true);
+
+        TheSI->registerCallbacks(*ThePIC, TheMAM.get());
+
+        // Register analysis passes
+        llvm::PassBuilder PB;
+        PB.registerModuleAnalyses(*TheMAM);
+        PB.registerFunctionAnalyses(*TheFAM);
+        PB.registerLoopAnalyses(*TheLAM);
+        PB.registerCGSCCAnalyses(*TheCGAM);
+        PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
+
+        // 添加kaleidoscope教程中给的一些优化pass
+        // Do simple "peephole" optimizations and bit-twiddling optzns.
+        TheFPM->addPass(llvm::InstCombinePass());
+        // Reassociate expressions.
+        TheFPM->addPass(llvm::ReassociatePass());
+        // Eliminate Common SubExpressions.
+        TheFPM->addPass(llvm::GVNPass());
+        // Simplify the control flow graph (deleting unreachable blocks, etc).
+        TheFPM->addPass(llvm::SimplifyCFGPass());
     }
 
     void EnterScope() { NamedValuesStack.emplace_back(); }
@@ -594,6 +642,8 @@ llvm::Value *DefinitionAst::gen_code(CodeGenContext &ctx) {
     llvm::Value *retValue = this->body->gen_code(ctx);
     ctx.Builder->CreateRet(retValue);
     llvm::verifyFunction(*fun);
+    // 调用pass进行优化
+    ctx.TheFPM->run(*fun, *ctx.TheFAM);
     ctx.ExitScope();
     return fun;
 }
@@ -722,7 +772,7 @@ int main() {
     try {
         mainLoop(stream, *ctx);
     } catch (std::exception &e) {
-        std::cerr << "报错信息：" << e.what() << std::endl;
+        std::cerr << "报错信息：" << e.what() << "===================\n" << std::endl;
     }
     ctx->TheModule->print(llvm::errs(), nullptr); //print(llvm::outs());
 
