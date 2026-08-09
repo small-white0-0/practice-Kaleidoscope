@@ -261,7 +261,7 @@ Token TokenStream::nextToken() {
     if (const auto cur_p = std::get_if<Char>(&cur);
         cur_p != nullptr && cur_p->value == ';') {
         auto has_comment = false;
-        while (stream->peek().value_or('\0') != '\n') {
+        while (stream->peek().value_or('\n') != '\n') {
             if (!has_comment) {
                 std::cout << "comment: ";
                 has_comment = true;
@@ -408,7 +408,7 @@ std::unique_ptr<ExprAst> parsePrimaryExpr(TokenStream &stream) {
         std::vector<std::unique_ptr<ExprAst> > args;
         while (true) {
             // end args list
-            if (!isChar(stream.peekToken(), ')')) {
+            if (isChar(stream.peekToken(), ')')) {
                 stream.nextToken(); // eat )
                 break;
             }
