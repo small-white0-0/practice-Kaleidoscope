@@ -21,6 +21,8 @@ struct Position {
     std::string file;
     int line;
     int column;
+
+    bool operator==(const Position &) const = default;
 };
 
 class CharStream {
@@ -105,6 +107,8 @@ struct Location {
 
     Location(Position &&start, Position &&end) : start{start}, end{end} {
     }
+
+    bool operator==(const Location &) const = default;
 };
 
 struct Def {
