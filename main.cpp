@@ -568,55 +568,6 @@ llvm::Value *CodeGenContext::LookupName(const std::string &Name) {
     return nullptr;
 }
 
-template<typename T>
-class AstVisitor {
-public:
-    virtual ~AstVisitor() = default;
-
-    virtual T visit(const DefinitionAst &) = 0;
-
-    virtual T visit(const ExternAst &) = 0;
-
-    virtual T visit(const PrototypeAst &) = 0;
-
-    virtual T visit(const NumberExprAst &) = 0;
-
-    virtual T visit(const VarExprAst &) = 0;
-
-    virtual T visit(const BinaryExprAst &) = 0;
-
-    virtual T visit(const CallExprAst &) = 0;
-
-    virtual T visit(const ExprAst &) = 0;
-};
-
-class IrGenVisitor final : public AstVisitor<llvm::Value *> {
-    std::unique_ptr<CodeGenContext> ctx;
-
-public:
-    IrGenVisitor(std::unique_ptr<CodeGenContext> ctx) : ctx(std::move(ctx)) {
-    }
-
-    void print_code() {
-        ctx->TheModule->print(llvm::errs(), nullptr); //print(llvm::outs());
-    }
-
-    llvm::Value *visit(const DefinitionAst &) override;
-
-    llvm::Value *visit(const ExternAst &) override;
-
-    llvm::Value *visit(const PrototypeAst &) override;
-
-    llvm::Value *visit(const NumberExprAst &) override;
-
-    llvm::Value *visit(const VarExprAst &) override;
-
-    llvm::Value *visit(const BinaryExprAst &) override;
-
-    llvm::Value *visit(const CallExprAst &) override;
-
-    llvm::Value *visit(const ExprAst &) override;
-};
 
 llvm::Value *DefinitionAst::gen_code(CodeGenContext &ctx) {
     ctx.EnterScope();
@@ -643,38 +594,10 @@ llvm::Value *DefinitionAst::gen_code(CodeGenContext &ctx) {
     return fun;
 }
 
-llvm::Value *IrGenVisitor::visit(const DefinitionAst &ast) {
-    ctx->EnterScope();
-    auto fun = ctx->TheModule->getFunction(ast.prototype.identifier.name);
-    if (!fun) {
-        fun = llvm::dyn_cast<llvm::Function>(visit(ast.prototype));
-    } else if (fun->arg_size() != ast.prototype.args.size()) {
-        throw std::runtime_error{"参数不匹配"};
-    } else if (!fun->empty()) {
-        throw std::runtime_error{"重复定义"};
-    }
-
-    auto enter_block = llvm::BasicBlock::Create(*ctx->TheContext, "entry", fun);
-    ctx->Builder->SetInsertPoint(enter_block);
-
-    for (auto &arg: fun->args()) {
-        ctx->addName(std::string(arg.getName()), &arg);
-    }
-
-    llvm::Value *retValue = visit(*ast.body);
-    ctx->Builder->CreateRet(retValue);
-    llvm::verifyFunction(*fun);
-    ctx->ExitScope();
-    return fun;
-}
-
 llvm::Value *ExternAst::gen_code(CodeGenContext &ctx) {
     return this->prototype.gen_code(ctx);
 }
 
-llvm::Value *IrGenVisitor::visit(const ExternAst &ast) {
-    return visit(ast.prototype);
-}
 
 llvm::Value *PrototypeAst::gen_code(CodeGenContext &ctx) {
     // prototype only : double(double...)
@@ -691,28 +614,10 @@ llvm::Value *PrototypeAst::gen_code(CodeGenContext &ctx) {
     return fun;
 }
 
-llvm::Value *IrGenVisitor::visit(const PrototypeAst &ast) {
-    // prototype only : double(double...)
-    std::vector<llvm::Type *> args_type{ast.args.size(), llvm::Type::getDoubleTy(*ctx->TheContext)};
-    auto fun_type = llvm::FunctionType::get(llvm::Type::getDoubleTy(*ctx->TheContext), args_type, false);
-    auto fun = llvm::Function::Create(fun_type,
-                                      llvm::Function::ExternalLinkage,
-                                      ast.identifier.name,
-                                      ctx->TheModule.get());
-    unsigned Idx = 0;
-    for (auto &arg: fun->args())
-        arg.setName(ast.args[Idx++].name);
-
-    return fun;
-}
-
 llvm::Value *NumberExprAst::gen_code(CodeGenContext &ctx) {
     return llvm::ConstantFP::get(*ctx.TheContext, llvm::APFloat(this->number.getValue()));
 }
 
-llvm::Value *IrGenVisitor::visit(const NumberExprAst &ast) {
-    return llvm::ConstantFP::get(*ctx->TheContext, llvm::APFloat(ast.number.getValue()));
-}
 
 llvm::Value *VarExprAst::gen_code(CodeGenContext &ctx) {
     auto v = ctx.LookupName(identifier.name);
@@ -722,13 +627,6 @@ llvm::Value *VarExprAst::gen_code(CodeGenContext &ctx) {
     return v;
 }
 
-llvm::Value *IrGenVisitor::visit(const VarExprAst &ast) {
-    auto v = ctx->LookupName(ast.identifier.name);
-    if (!v) {
-        throw std::runtime_error{"引用变量不存在"};
-    }
-    return v;
-}
 
 llvm::Value *BinaryExprAst::gen_code(CodeGenContext &ctx) {
     auto l = left->gen_code(ctx);
@@ -738,18 +636,6 @@ llvm::Value *BinaryExprAst::gen_code(CodeGenContext &ctx) {
     }
     if (ctx.BinOpMap[ops]) {
         return ctx.BinOpMap[ops](l, r, ctx);
-    }
-    throw std::runtime_error{"binary gen failed."};
-}
-
-llvm::Value *IrGenVisitor::visit(const BinaryExprAst &ast) {
-    auto l = visit(*ast.left);
-    auto r = visit(*ast.right);
-    if (!l || !r) {
-        throw std::runtime_error{"binary lacked."};
-    }
-    if (ctx->BinOpMap[ast.ops]) {
-        return ctx->BinOpMap[ast.ops](l, r, *ctx);
     }
     throw std::runtime_error{"binary gen failed."};
 }
@@ -773,66 +659,7 @@ llvm::Value *CallExprAst::gen_code(CodeGenContext &ctx) {
     return ctx.Builder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
-llvm::Value *IrGenVisitor::visit(const CallExprAst &ast) {
-    llvm::Function *CalleeF = ctx->TheModule->getFunction(ast.identifier.name);
-    if (!CalleeF)
-        throw std::runtime_error{"Unknown function referenced"};
-
-    // If argument mismatch error.
-    if (CalleeF->arg_size() != ast.args.size())
-        throw std::runtime_error("Incorrect # arguments passed");
-
-    std::vector<llvm::Value *> ArgsV;
-    for (unsigned i = 0, e = ast.args.size(); i != e; ++i) {
-        ArgsV.push_back(visit(*ast.args[i]));
-        if (!ArgsV.back())
-            return nullptr;
-    }
-
-    return ctx->Builder->CreateCall(CalleeF, ArgsV, "calltmp");
-}
-
-llvm::Value *IrGenVisitor::visit(const ExprAst &ast) {
-    if (typeid(ast) == typeid(NumberExprAst)) {
-        return visit(dynamic_cast<const NumberExprAst &>(ast));
-    } else if (typeid(ast) == typeid(VarExprAst)) {
-        return visit(dynamic_cast<const VarExprAst &>(ast));
-    } else if (typeid(ast) == typeid(BinaryExprAst)) {
-        return visit(dynamic_cast<const BinaryExprAst &>(ast));
-    } else if (typeid(ast) == typeid(CallExprAst)) {
-        return visit(dynamic_cast<const CallExprAst &>(ast));
-    } else {
-        throw std::runtime_error{"unknow expression"};
-    }
-}
-
-
-// void mainLoop(TokenStream &stream) {
-void mainLoop(TokenStream &stream, IrGenVisitor &gen) {
-    while (true) {
-        auto first_token = stream.peekToken();
-        if (std::holds_alternative<std::monostate>(first_token)) {
-            return;
-        }
-        if (isChar(first_token, ';')) {
-            stream.nextToken();
-        } else if (std::holds_alternative<Def>(first_token)) {
-            stream.nextToken(); // eat def
-            auto def = parseDefinition(stream);
-            gen.visit(def);
-        } else if (std::holds_alternative<Extern>(first_token)) {
-            stream.nextToken(); // eat extern
-            auto extern_statement = parseExtern(stream);
-            gen.visit(extern_statement);
-        } else {
-            auto top_level_expr = parseTopLevelExpr(stream);
-            gen.visit(top_level_expr);
-        }
-    }
-}
-
-
-void mainLoop1(TokenStream &stream, CodeGenContext &ctx) {
+void mainLoop(TokenStream &stream, CodeGenContext &ctx) {
     while (true) {
         auto first_token = stream.peekToken();
         if (std::holds_alternative<std::monostate>(first_token)) {
@@ -887,29 +714,13 @@ int main() {
         return ctx.Builder->CreateFDiv(l, r);
     });
 
-#ifdef visit
-
-    auto gen = IrGenVisitor(std::move(ctx));
-
-
     auto stream = TokenStream{std::move(std::make_unique<InputCharStream>())};
     try {
-        mainLoop(stream, gen);
-    } catch (std::exception &e) {
-        std::cerr << "报错信息：" << e.what() << std::endl;
-    }
-    gen.print_code(); //->print(llvm::errs(), nullptr);
-#else
-
-
-    auto stream = TokenStream{std::move(std::make_unique<InputCharStream>())};
-    try {
-        mainLoop1(stream, *ctx);
+        mainLoop(stream, *ctx);
     } catch (std::exception &e) {
         std::cerr << "报错信息：" << e.what() << std::endl;
     }
     ctx->TheModule->print(llvm::errs(), nullptr); //print(llvm::outs());
-#endif
 
     return 0;
 }
