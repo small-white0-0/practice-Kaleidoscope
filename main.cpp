@@ -138,6 +138,31 @@ public:
     }
 };
 
+struct If {
+    Location loc;
+    bool operator==(const If &) const { return true; }
+};
+
+struct Then {
+    Location loc;
+    bool operator==(const Then &) const { return true; }
+};
+
+struct Else {
+    Location loc;
+    bool operator==(const Else &) const { return true; }
+};
+
+struct For {
+    Location loc;
+    bool operator==(const For &) const { return true; }
+};
+
+struct In {
+    Location loc;
+    bool operator==(const In &) const { return true; }
+};
+
 struct Identifier {
     std::string name;
     Location loc;
@@ -174,7 +199,7 @@ struct Char {
     }
 };
 
-using Token = std::variant<std::monostate, Def, Extern, Identifier, Number, Char>;
+using Token = std::variant<std::monostate, Def, Extern, If, Then, Else, For, In, Identifier, Number, Char>;
 
 class TokenStream {
     std::unique_ptr<CharStream> stream;
@@ -240,6 +265,16 @@ Token TokenStream::nextToken() {
             next = Def{loc};
         } else if (id == "extern") {
             next = Extern{loc};
+        } else if (id == "if") {
+            next = If{loc};
+        } else if (id == "then") {
+            next = Then{loc};
+        } else if (id == "else") {
+            next = Else{loc};
+        } else if (id == "for") {
+            next = For{loc};
+        } else if (id == "in") {
+            next = In{loc};
         } else {
             next = Identifier{id, loc};
         }
@@ -337,6 +372,39 @@ public:
             std::move(identifier)
         },
         args{std::move(args)} {
+    }
+
+    llvm::Value *gen_code(CodeGenContext &ctx) override;
+};
+
+class IfExprAst final : public ExprAst {
+public:
+    std::unique_ptr<ExprAst> condition;
+    std::unique_ptr<ExprAst> thenExpr;
+    std::unique_ptr<ExprAst> elseExpr;
+
+    IfExprAst(std::unique_ptr<ExprAst> condition, std::unique_ptr<ExprAst> thenExpr,
+              std::unique_ptr<ExprAst> elseExpr) : condition{
+                                                       std::move(condition)
+                                                   }, thenExpr{std::move(thenExpr)}, elseExpr{std::move(elseExpr)} {
+    }
+
+    llvm::Value *gen_code(CodeGenContext &ctx) override;
+};
+
+class ForExprAst final : public ExprAst {
+public:
+    Identifier var;
+    Number init;
+    std::unique_ptr<ExprAst> endCondition;
+    std::optional<Number> step;
+    std::unique_ptr<ExprAst> body;
+
+    ForExprAst(Identifier var, Number init,
+               std::unique_ptr<ExprAst> endCondition,
+               std::optional<Number> step, std::unique_ptr<ExprAst> body)
+        : var(std::move(var)), init(std::move(init)), endCondition(std::move(endCondition)),
+          step(std::move(step)), body(std::move(body)) {
     }
 
     llvm::Value *gen_code(CodeGenContext &ctx) override;
@@ -443,6 +511,60 @@ std::unique_ptr<ExprAst> parsePrimaryExpr(TokenStream &stream) {
     }
 }
 
+std::unique_ptr<IfExprAst> parseIfExpr(TokenStream &stream) {
+    // eat 'if' token
+    stream.nextToken();
+    auto cond = parseExpr(stream);
+    // only eat 'then'. if nextToken isn't 'then', throw error.
+    if (!std::holds_alternative<Then>(stream.nextToken())) {
+        throw std::runtime_error{"Expected 'then' keyword."};
+    }
+    auto thenExpr = parseExpr(stream);
+    if (!std::holds_alternative<Else>(stream.nextToken())) {
+        throw std::runtime_error{"Expected 'Else' keyword."};
+    }
+    auto elseExpr = parseExpr(stream);
+    return std::make_unique<IfExprAst>(std::move(cond), std::move(thenExpr), std::move(elseExpr));
+}
+
+std::unique_ptr<ForExprAst> parseForExpr(TokenStream &stream) {
+    // eat for keyword
+    stream.nextToken();
+    // variable
+    if (!std::holds_alternative<Identifier>(stream.peekToken())) {
+        throw std::runtime_error{"Expected 'identifier' after 'for'."};
+    }
+    auto variable = std::get<Identifier>(stream.nextToken());
+    // eat just and only '='
+    if (!isChar(stream.nextToken(), '=')) {
+        throw std::runtime_error{"Expected '='"};
+    }
+    if (!std::holds_alternative<Number>(stream.peekToken())) {
+        throw std::runtime_error{"Expected 'number' for variable statement."};
+    }
+    auto init = std::get<Number>(stream.nextToken());
+    if (!isChar(stream.nextToken(), ',')) {
+        throw std::runtime_error{"Expected ','"};
+    }
+    auto endCondition = parseExpr(stream);
+    std::optional<Number> step = std::nullopt;
+    // 可选的step
+    if (isChar(stream.peekToken(), ',')) {
+        // 有step
+        stream.nextToken(); // eat ,
+        if (!std::holds_alternative<Number>(stream.peekToken())) {
+            throw std::runtime_error{"Expected 'number' for step"};
+        }
+        step = std::get<Number>(stream.nextToken());
+    }
+    if (!std::holds_alternative<In>(stream.nextToken())) {
+        throw std::runtime_error{"Expected 'in'"};
+    }
+    auto body = parseExpr(stream);
+    return std::make_unique<ForExprAst>(std::move(variable), std::move(init), std::move(endCondition),
+                                        std::move(step), std::move(body));
+}
+
 std::unique_ptr<ExprAst> tryParseBinaryExpr(const int prePriority, std::unique_ptr<ExprAst> left, TokenStream &stream) {
     auto get_priority = [](const char op) {
         if (const auto priority = GLOBAL_BINARY_OPS.find(op); priority != GLOBAL_BINARY_OPS.end()) {
@@ -471,6 +593,12 @@ std::unique_ptr<ExprAst> tryParseBinaryExpr(const int prePriority, std::unique_p
 }
 
 std::unique_ptr<ExprAst> parseExpr(TokenStream &stream) {
+    if (std::holds_alternative<If>(stream.peekToken())) {
+        return parseIfExpr(stream);
+    }
+    if (std::holds_alternative<For>(stream.peekToken())) {
+        return parseForExpr(stream);
+    }
     auto primaryExpr = parsePrimaryExpr(stream);
     return tryParseBinaryExpr(0, std::move(primaryExpr), stream);
 }
@@ -692,6 +820,89 @@ llvm::Value *BinaryExprAst::gen_code(CodeGenContext &ctx) {
         return ctx.BinOpMap[ops](l, r, ctx);
     }
     throw std::runtime_error{"binary gen failed."};
+}
+
+llvm::Value *IfExprAst::gen_code(CodeGenContext &ctx) {
+    // entry, for condition
+    auto condV = this->condition->gen_code(ctx);
+    condV = ctx.Builder->CreateFCmpONE(condV, llvm::ConstantFP::get(*ctx.TheContext, llvm::APFloat(0.0)), "ifcond");
+    // 这里就先这么写了，下一个练手项目再做好scope的管理。
+    auto fun = ctx.Builder->GetInsertBlock()->getParent();
+    auto thenBB = llvm::BasicBlock::Create(*ctx.TheContext, "thenBB");
+    auto elseBB = llvm::BasicBlock::Create(*ctx.TheContext, "elseBB");
+    auto mergeBB = llvm::BasicBlock::Create(*ctx.TheContext, "ifcont");
+
+    ctx.Builder->CreateCondBr(condV, thenBB, elseBB);
+
+    //then basic block
+    fun->insert(fun->end(), thenBB);
+    ctx.Builder->SetInsertPoint(thenBB);
+    auto thenV = this->thenExpr->gen_code(ctx);
+    ctx.Builder->CreateBr(mergeBB);
+    // because thenExpr gencode may change the basic block
+    auto thenBBOut = ctx.Builder->GetInsertBlock();
+
+    // else basic block
+    fun->insert(fun->end(), elseBB);
+    ctx.Builder->SetInsertPoint(elseBB);
+    auto elseV = this->elseExpr->gen_code(ctx);
+    ctx.Builder->CreateBr(mergeBB);
+    auto elseBBOut = ctx.Builder->GetInsertBlock();
+
+    // if merge out
+    fun->insert(fun->end(), mergeBB);
+    ctx.Builder->SetInsertPoint(mergeBB);
+    auto pn = ctx.Builder->CreatePHI(llvm::Type::getDoubleTy(*ctx.TheContext), 2, "iftemp");
+    pn->addIncoming(thenV, thenBBOut);
+    pn->addIncoming(elseV, elseBBOut);
+    return pn;
+}
+
+llvm::Value *ForExprAst::gen_code(CodeGenContext &ctx) {
+    ctx.EnterScope();
+    auto fun = ctx.Builder->GetInsertBlock()->getParent();
+    auto preLoopBB = ctx.Builder->GetInsertBlock();
+    auto loopBB = llvm::BasicBlock::Create(*ctx.TheContext, "loopBB");
+    auto loopEndBB = llvm::BasicBlock::Create(*ctx.TheContext, "loopEndBB");
+    // enter loop
+    ctx.Builder->CreateBr(loopBB);
+    fun->insert(fun->end(), loopBB);
+    ctx.Builder->SetInsertPoint(loopBB);
+    // get init value as 循环变量
+    auto loopV = ctx.Builder->CreatePHI(llvm::Type::getDoubleTy(*ctx.TheContext),
+                                        2, this->var.name);
+    ctx.addName(this->var.name, loopV);
+    loopV->addIncoming(llvm::ConstantFP::get(llvm::Type::getDoubleTy(*ctx.TheContext), this->init.getValue()),
+                       preLoopBB);
+
+    // 计算下一次的变量值
+    llvm::Value *nextVar;
+    if (this->step) {
+        nextVar = ctx.Builder->CreateFAdd(
+            loopV, llvm::ConstantFP::get(llvm::Type::getDoubleTy(*ctx.TheContext), this->step->getValue()), "nextVar");
+    } else {
+        nextVar = ctx.Builder->CreateFAdd(
+            loopV, llvm::ConstantFP::get(*ctx.TheContext, llvm::APFloat(1.0)), "nextVar");
+    }
+    // 执行表达式
+    auto loopE = this->body->gen_code(ctx);
+    // 判断是否结束
+    auto loopEndCond = this->endCondition->gen_code(ctx);
+    loopEndCond = ctx.Builder->CreateFCmpONE(loopEndCond, llvm::ConstantFP::get(*ctx.TheContext, llvm::APFloat(0.0)));
+    // 补完loopV的赋值第二部分
+    auto loopBBOut = ctx.Builder->GetInsertBlock();
+    loopV->addIncoming(nextVar, loopBBOut);
+    // jump
+    ctx.Builder->CreateCondBr(loopEndCond, loopBB, loopEndBB);
+    // loop结束了
+    fun->insert(fun->end(), loopEndBB);
+    ctx.Builder->SetInsertPoint(loopEndBB);
+    auto loopRet = ctx.Builder->CreatePHI(llvm::Type::getDoubleTy(*ctx.TheContext),
+                                          1, "loopret");
+    loopRet->addIncoming(loopE, loopBBOut);
+    ctx.ExitScope();
+
+    return loopRet;
 }
 
 llvm::Value *CallExprAst::gen_code(CodeGenContext &ctx) {
