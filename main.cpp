@@ -247,10 +247,27 @@ Token TokenStream::nextToken() {
      * 同时会更新cur为next,last更新为cur.
      * 如果next是空，且cur是空，则不会更新cur和last.
      */
-    // 消耗前导space
-    while (isspace(static_cast<unsigned char>(stream->peek().value_or('X')))) {
-        stream->next();
+    // 消除空白和#开始的注释
+    while (true) {
+        // 消耗前导space
+        while (isspace(static_cast<unsigned char>(stream->peek().value_or('X')))) {
+            stream->next();
+        }
+        if (stream->peek().value_or('\0') == '#') {
+            auto has_comment = false;
+            while (stream->peek().value_or('\n') != '\n') {
+                if (!has_comment) {
+                    std::cout << "comment: ";
+                    has_comment = true;
+                }
+                std::cout << stream->next().value();
+            }
+            if (has_comment) std::cout << '\n';
+        } else {
+            break;
+        }
     }
+
     // 无后续输入
     if (!stream->peek()) {
         if (!std::holds_alternative<std::monostate>(cur)) {
@@ -317,19 +334,6 @@ Token TokenStream::nextToken() {
     assert(!std::holds_alternative<std::monostate>(next));
     last = std::move(cur);
     cur = std::move(next);
-    if (const auto cur_p = std::get_if<Char>(&cur);
-        cur_p != nullptr && cur_p->value == ';') {
-        auto has_comment = false;
-        while (stream->peek().value_or('\n') != '\n') {
-            if (!has_comment) {
-                std::cout << "comment: ";
-                has_comment = true;
-            }
-            auto c = stream->next();
-            std::cout << c.value();
-        }
-        if (has_comment) std::cout << '\n';
-    }
     return last;
 }
 
@@ -1092,10 +1096,11 @@ int main() {
     auto stream = TokenStream{std::move(std::make_unique<InputCharStream>())};
     try {
         mainLoop(stream, *ctx);
+        ctx->TheModule->print(llvm::errs(), nullptr); //print(llvm::outs());
     } catch (std::exception &e) {
         std::cerr << "报错信息：" << e.what() << "===================\n" << std::endl;
+        return 1;
     }
-    ctx->TheModule->print(llvm::errs(), nullptr); //print(llvm::outs());
 
     return 0;
 }
