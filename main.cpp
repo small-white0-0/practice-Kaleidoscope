@@ -163,6 +163,16 @@ struct In {
     bool operator==(const In &) const { return true; }
 };
 
+struct Unary {
+    Location loc;
+    bool operator==(const Unary &) const { return true; }
+};
+
+struct Binary {
+    Location loc;
+    bool operator==(const Binary &) const { return true; }
+};
+
 struct Identifier {
     std::string name;
     Location loc;
@@ -199,7 +209,8 @@ struct Char {
     }
 };
 
-using Token = std::variant<std::monostate, Def, Extern, If, Then, Else, For, In, Identifier, Number, Char>;
+using Token = std::variant<std::monostate, Def, Extern, If, Then, Else, For, In, Unary, Binary, Identifier, Number,
+    Char>;
 
 class TokenStream {
     std::unique_ptr<CharStream> stream;
@@ -275,6 +286,10 @@ Token TokenStream::nextToken() {
             next = For{loc};
         } else if (id == "in") {
             next = In{loc};
+        } else if (id == "unary") {
+            next = Unary{loc};
+        } else if (id == "binary") {
+            next = Binary{loc};
         } else {
             next = Identifier{id, loc};
         }
@@ -363,6 +378,18 @@ public:
     llvm::Value *gen_code(CodeGenContext &ctx) override;
 };
 
+class UnaryExprAst final : public ExprAst {
+public:
+    Char ops;
+    std::unique_ptr<ExprAst> operand;
+
+    UnaryExprAst(Char op, std::unique_ptr<ExprAst> operand) : ops{std::move(op)}, operand{std::move(operand)} {
+    }
+
+    llvm::Value *gen_code(CodeGenContext &ctx) override;
+};
+
+
 class CallExprAst final : public ExprAst {
 public:
     Identifier identifier;
@@ -414,10 +441,14 @@ class PrototypeAst {
 public:
     Identifier identifier;
     std::vector<Identifier> args;
+    std::optional<uint8_t> precedence;
 
-    PrototypeAst(Identifier identifier, std::vector<Identifier> args) : identifier{std::move(identifier)},
-                                                                        args{std::move(args)} {
+    PrototypeAst(Identifier identifier, std::vector<Identifier> args,
+                 std::optional<uint8_t> precedence = std::nullopt) : identifier{std::move(identifier)},
+                                                                     args{std::move(args)},
+                                                                     precedence(std::move(precedence)) {
     }
+
 
     llvm::Value *gen_code(CodeGenContext &ctx);
 };
@@ -565,6 +596,12 @@ std::unique_ptr<ForExprAst> parseForExpr(TokenStream &stream) {
                                         std::move(step), std::move(body));
 }
 
+std::unique_ptr<UnaryExprAst> parseUnaryExpr(TokenStream &stream) {
+    auto op = std::get<Char>(stream.nextToken());
+    auto primaryExpr = parsePrimaryExpr(stream);
+    return std::make_unique<UnaryExprAst>(std::move(op), std::move(primaryExpr));
+}
+
 std::unique_ptr<ExprAst> tryParseBinaryExpr(const int prePriority, std::unique_ptr<ExprAst> left, TokenStream &stream) {
     auto get_priority = [](const char op) {
         if (const auto priority = GLOBAL_BINARY_OPS.find(op); priority != GLOBAL_BINARY_OPS.end()) {
@@ -575,7 +612,7 @@ std::unique_ptr<ExprAst> tryParseBinaryExpr(const int prePriority, std::unique_p
     while (true) {
         auto may_op = stream.peekToken();
         if (!std::holds_alternative<Char>(may_op)) {
-            // not binary expr
+            // not binary expr or unary expr
             return left;
         }
         auto op = std::get<Char>(may_op).value;
@@ -586,27 +623,68 @@ std::unique_ptr<ExprAst> tryParseBinaryExpr(const int prePriority, std::unique_p
         // eat op
         stream.nextToken();
         // right primary expr
-        auto right = parsePrimaryExpr(stream);
+        std::unique_ptr<ExprAst> right;
+        auto curToken = stream.peekToken();
+        if (std::holds_alternative<Char>(curToken) && !isChar(curToken, '(') && !isChar(curToken, ')')) {
+            // this should be a unary expr
+            right = parseUnaryExpr(stream);
+        } else {
+            right = parsePrimaryExpr(stream);
+        }
         right = tryParseBinaryExpr(get_priority(op), std::move(right), stream);
         left = std::make_unique<BinaryExprAst>(op, std::move(left), std::move(right));
     }
 }
 
 std::unique_ptr<ExprAst> parseExpr(TokenStream &stream) {
-    if (std::holds_alternative<If>(stream.peekToken())) {
+    auto firstToken = stream.peekToken();
+    if (std::holds_alternative<If>(firstToken)) {
         return parseIfExpr(stream);
     }
-    if (std::holds_alternative<For>(stream.peekToken())) {
+    if (std::holds_alternative<For>(firstToken)) {
         return parseForExpr(stream);
     }
-    auto primaryExpr = parsePrimaryExpr(stream);
-    return tryParseBinaryExpr(0, std::move(primaryExpr), stream);
+    // if 'char' start, it should be a unary operate.
+    std::unique_ptr<ExprAst> left;
+    if (std::holds_alternative<Char>(firstToken) && !isChar(firstToken, '(') && !isChar(firstToken, ')')) {
+        left = parseUnaryExpr(stream);
+    } else {
+        left = parsePrimaryExpr(stream);
+    }
+    return tryParseBinaryExpr(0, std::move(left), stream);
 }
 
 PrototypeAst parsePrototype(TokenStream &stream) {
-    auto name = expect<Identifier>(stream.nextToken(), "Expect identifier as prototype name.");
+    // 处理binary和unary
+    std::unique_ptr<Identifier> name;
+    std::optional<uint8_t> precedence = std::nullopt;
+    int8_t kind = 0; // 0 is common, 1 is unary, 2 is binary.
+    auto firstToken = stream.nextToken();
+    if (std::holds_alternative<Binary>(firstToken)) {
+        auto loc = std::get<Binary>(firstToken).loc;
+        auto op = expect<Char>(stream.nextToken(), "Expect single char as operate.").value;
+        if (std::holds_alternative<Number>(stream.peekToken())) {
+            auto mayPrecedence = expect<Number>(stream.nextToken(), "Expect single number as precedence.");
+            if (mayPrecedence.div != 1 || mayPrecedence.getValue() >= 100) {
+                throw std::runtime_error{"Expect precedence number is integer and 0~100."};
+            }
+            precedence = static_cast<uint8_t>(mayPrecedence.getValue());
+        } else {
+            precedence = 99;
+        }
+        name = std::make_unique<Identifier>(Identifier({std::string{"binary"} + op}, loc));
+        kind = 2;
+    } else if (std::holds_alternative<Unary>(firstToken)) {
+        const auto loc = std::get<Unary>(firstToken).loc;
+        const auto op = expect<Char>(stream.nextToken(), "Expect single char as operate.").value;
+        name = std::make_unique<Identifier>(Identifier({std::string{"unary"} + op}, loc));
+        kind = 1;
+    } else if (std::holds_alternative<Identifier>(firstToken)) {
+        name = std::make_unique<Identifier>(std::get<Identifier>(firstToken));
+    } else {
+        throw std::runtime_error{"Expected identifier or binary, unary operator."};
+    }
     std::vector<Identifier> args;
-
     // 消耗'('
     if (expect<Char>(stream.nextToken(), "expect char").value != '(') {
         throw std::runtime_error{"Expected '('"};
@@ -629,7 +707,14 @@ PrototypeAst parsePrototype(TokenStream &stream) {
             throw std::runtime_error{"Expected ',' or ')' after arg in prototype."};
         }
     }
-    return {std::move(name), std::move(args)};
+    // 检查参数数量
+    if (kind == 1 && args.size() != 1) {
+        throw std::runtime_error{"unary function should have and only have one argument."};
+    }
+    if (kind == 2 && args.size() != 2) {
+        throw std::runtime_error{"binary function should have and only have two arguments."};
+    }
+    return {std::move(*name), std::move(args), precedence};
 }
 
 DefinitionAst parseDefinition(TokenStream &stream) {
@@ -773,6 +858,19 @@ llvm::Value *DefinitionAst::gen_code(CodeGenContext &ctx) {
     // 调用pass进行优化
     ctx.TheFPM->run(*fun, *ctx.TheFAM);
     ctx.ExitScope();
+
+    // 如果是binary操作符自定义函数，需要注册到BinOpMap中
+    if (this->prototype.precedence) {
+        std::string name = this->prototype.identifier.name;
+        char op = name.back();
+        ctx.setBinOp(op, [name](auto l, auto r, CodeGenContext &ctx) {
+            auto fun = ctx.TheModule->getFunction(name);
+            if (!fun) {
+                throw std::runtime_error{"Unknow error for lack binary definition "};
+            }
+            return static_cast<llvm::Value *>(ctx.Builder->CreateCall(fun, std::vector{l, r}));
+        });
+    }
     return fun;
 }
 
@@ -820,6 +918,17 @@ llvm::Value *BinaryExprAst::gen_code(CodeGenContext &ctx) {
         return ctx.BinOpMap[ops](l, r, ctx);
     }
     throw std::runtime_error{"binary gen failed."};
+}
+
+llvm::Value *UnaryExprAst::gen_code(CodeGenContext &ctx) {
+    const auto funName = std::string("unary") + this->ops.value;
+    const auto fun = ctx.TheModule->getFunction(funName);
+    if (!fun) {
+        throw std::runtime_error{"Unknown unary referenced"};
+    }
+    const auto arg = this->operand->gen_code(ctx);
+
+    return ctx.Builder->CreateCall(fun, arg, "unarycall");
 }
 
 llvm::Value *IfExprAst::gen_code(CodeGenContext &ctx) {
