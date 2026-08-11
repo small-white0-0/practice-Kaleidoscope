@@ -860,7 +860,7 @@ llvm::Value *DefinitionAst::gen_code(CodeGenContext &ctx) {
     ctx.ExitScope();
 
     // 如果是binary操作符自定义函数，需要注册到BinOpMap中
-    if (this->prototype.precedence) {
+    if (this->prototype.precedence.has_value()) {
         std::string name = this->prototype.identifier.name;
         char op = name.back();
         ctx.setBinOp(op, [name](auto l, auto r, CodeGenContext &ctx) {
@@ -870,6 +870,7 @@ llvm::Value *DefinitionAst::gen_code(CodeGenContext &ctx) {
             }
             return static_cast<llvm::Value *>(ctx.Builder->CreateCall(fun, std::vector{l, r}));
         });
+        GLOBAL_BINARY_OPS[op] = this->prototype.precedence.value();
     }
     return fun;
 }
