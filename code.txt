@@ -1,0 +1,80 @@
+# 优化测试例子
+def test1(x) 1+2+x;              #希望优化为 3 + x
+def test2(x) (1+2+x)*(x+(1+2));  #希望优化为 3+x,然后自己相加，而非计算两次3+x.
+# extern 声明
+extern sin(a);
+extern cos(a);
+extern atan2(x, y);
+extern print(x);
+
+# 无参数函数
+def zero() 0;
+def one() 1;
+
+# 单参数函数
+def double(x) x + x;
+def square(x) x * x;
+def isP(x) if x < 0 then 0 else 1;
+#def abs(x) if x < 0 then -x else x;   # ← 不支持，会报错。因为缺失一元取负会报错，后面添加unary之后，就可以正确编译。
+
+# 双参数函数
+def add(a, b) a + b;
+def sub(a, b) a - b;
+def mul(a, b) a * b;
+def div(a, b) a / b;
+def max(a, b) if a < b then b else a; # ← 不支持
+
+# 三参数函数
+def add3(a, b, c) add(add(a, b), c);
+def mulAdd(a, b, c) a * b + c;
+
+# 嵌套调用
+def hypot(a, b) sin(a) * sin(a) + cos(b) * cos(b);
+
+# 复杂表达式
+def complex(a, b, c) a + b * c < a * b + c;
+
+# 顶层表达式（匿名）
+#1 + 2;
+#sin(3.14);
+#add(1, add(2, 3));
+
+# 循环测试
+def testFor() for i = 1, i < 10 in sin(i);
+def testFor2() for i = 1, i < 10, 2 in sin(i);
+
+
+# 当前因为仅仅支持浮点类型，所以下面的很多运算定义可能存在异常未处理
+# 但是此时只关注编译器的正确性，运算定义正确性暂时忽略
+
+#自定义二元逻辑或（非内置）
+def binary | 2 (lhs, rhs) if lhs then 1 else if rhs then 1 else 0;
+
+#自定义二元取模（非内置）
+def binary % 6 (lhs, rhs) lhs - (lhs / rhs) * rhs;
+
+#自定义一元的取反，虽然和内置的`-`符号一样，但是因为一元运算符不记录到BinOpMap中，不会冲突.
+def  unary-(v) 0 - v;
+
+#自定义一元按位取反（近似）
+def unary ~ (v) -v - 1;
+
+#自定义一元转换为布尔值（非零→1，零→0）
+def unary $ (v) if v then 1 else 0;
+
+# 测试表达式（无变量，纯嵌套）
+extern printnum(n);
+
+#printnum((5 | 3) + (10 % 4) + (~ 8) + ($ (~ 8)) + (if (1 | 0) then 10 else 20));
+
+# 直接计算并输出结果
+printnum(
+    (5 | 3)                     # 逻辑或 => 1
+    + (10 % 4)                  # 取模 => 2
+    + (~ 8)                     # 按位取反 => -9
+    + ($ (~ 8))                 # 转换为布尔 => 1（非零）
+    + (if (1 | 0) then 10 else 20)  # if 表达式 => 10
+);
+# 整个表达式计算结果：1 + (-11) + 2 + (-9) + 1 + 10 = -6
+
+def abs(x) if x < 0 then -x else x;   # ← 不支持，会报错。因为缺失一元取负会报错，后面添加unary之后，就可以正确编译。
