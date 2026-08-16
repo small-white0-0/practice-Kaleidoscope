@@ -35,6 +35,10 @@
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Support/TargetSelect.h"
 
+#include "llvm/IR/DIBuilder.h"
+
+// #define enable_optimize
+
 class CodeGenContext;
 
 struct Position {
@@ -369,6 +373,8 @@ public:
     virtual ~ExprAst() = default;
 
     virtual llvm::Value *gen_code(CodeGenContext &ctx) =0;
+
+    virtual Position getLocation() =0;
 };
 
 class NumberExprAst final : public ExprAst {
@@ -379,6 +385,10 @@ public:
     }
 
     llvm::Value *gen_code(CodeGenContext &ctx) override;
+
+    Position getLocation() override {
+        return number.loc.start;
+    }
 };
 
 class VariableExprAst final : public ExprAst {
@@ -389,6 +399,10 @@ public:
     }
 
     llvm::Value *gen_code(CodeGenContext &ctx) override;
+
+    Position getLocation() override {
+        return identifier.loc.start;
+    }
 };
 
 class BinaryExprAst final : public ExprAst {
@@ -401,6 +415,10 @@ public:
     }
 
     llvm::Value *gen_code(CodeGenContext &ctx) override;
+
+    Position getLocation() override {
+        return left->getLocation();
+    }
 };
 
 class UnaryExprAst final : public ExprAst {
@@ -412,6 +430,10 @@ public:
     }
 
     llvm::Value *gen_code(CodeGenContext &ctx) override;
+
+    Position getLocation() override {
+        return ops.loc.start;
+    }
 };
 
 
@@ -427,51 +449,71 @@ public:
     }
 
     llvm::Value *gen_code(CodeGenContext &ctx) override;
+
+    Position getLocation() override {
+        return identifier.loc.start;
+    }
 };
 
 class IfExprAst final : public ExprAst {
 public:
+    If ifKey;
     std::unique_ptr<ExprAst> condition;
     std::unique_ptr<ExprAst> thenExpr;
     std::unique_ptr<ExprAst> elseExpr;
 
-    IfExprAst(std::unique_ptr<ExprAst> condition, std::unique_ptr<ExprAst> thenExpr,
-              std::unique_ptr<ExprAst> elseExpr) : condition{
+    IfExprAst(If ifKey, std::unique_ptr<ExprAst> condition, std::unique_ptr<ExprAst> thenExpr,
+              std::unique_ptr<ExprAst> elseExpr) : ifKey(std::move(ifKey)), condition{
                                                        std::move(condition)
                                                    }, thenExpr{std::move(thenExpr)}, elseExpr{std::move(elseExpr)} {
     }
 
     llvm::Value *gen_code(CodeGenContext &ctx) override;
+
+    Position getLocation() override {
+        return ifKey.loc.start;
+    }
 };
 
 class ForExprAst final : public ExprAst {
 public:
+    For forKey;
     Identifier var;
     Number init;
     std::unique_ptr<ExprAst> endCondition;
     std::optional<Number> step;
     std::unique_ptr<ExprAst> body;
 
-    ForExprAst(Identifier var, Number init,
+    ForExprAst(For forKey, Identifier var, Number init,
                std::unique_ptr<ExprAst> endCondition,
                std::optional<Number> step, std::unique_ptr<ExprAst> body)
-        : var(std::move(var)), init(std::move(init)), endCondition(std::move(endCondition)),
+        : forKey(std::move(forKey)), var(std::move(var)), init(std::move(init)), endCondition(std::move(endCondition)),
           step(std::move(step)), body(std::move(body)) {
     }
 
     llvm::Value *gen_code(CodeGenContext &ctx) override;
+
+    Position getLocation() override {
+        return forKey.loc.start;
+    }
 };
 
 class VarExprAst final : public ExprAst {
 public:
+    Var varKey;
     std::vector<std::tuple<Identifier, std::unique_ptr<ExprAst> > > variables;
     std::unique_ptr<ExprAst> body;
 
-    VarExprAst(std::vector<std::tuple<Identifier, std::unique_ptr<ExprAst> > > variables,
-               std::unique_ptr<ExprAst> body) : variables(std::move(variables)), body(std::move(body)) {
+    VarExprAst(Var varKey, std::vector<std::tuple<Identifier, std::unique_ptr<ExprAst> > > variables,
+               std::unique_ptr<ExprAst> body) : varKey(std::move(varKey)), variables(std::move(variables)),
+                                                body(std::move(body)) {
     }
 
     llvm::Value *gen_code(CodeGenContext &ctx) override;
+
+    Position getLocation() override {
+        return varKey.loc.start;
+    }
 };
 
 class PrototypeAst {
@@ -581,7 +623,7 @@ std::unique_ptr<ExprAst> parsePrimaryExpr(TokenStream &stream) {
 
 std::unique_ptr<IfExprAst> parseIfExpr(TokenStream &stream) {
     // eat 'if' token
-    stream.nextToken();
+    auto ifKey = std::get<If>(stream.nextToken());
     auto cond = parseExpr(stream);
     // only eat 'then'. if nextToken isn't 'then', throw error.
     if (!std::holds_alternative<Then>(stream.nextToken())) {
@@ -592,12 +634,12 @@ std::unique_ptr<IfExprAst> parseIfExpr(TokenStream &stream) {
         throw std::runtime_error{"Expected 'Else' keyword."};
     }
     auto elseExpr = parseExpr(stream);
-    return std::make_unique<IfExprAst>(std::move(cond), std::move(thenExpr), std::move(elseExpr));
+    return std::make_unique<IfExprAst>(ifKey, std::move(cond), std::move(thenExpr), std::move(elseExpr));
 }
 
 std::unique_ptr<ForExprAst> parseForExpr(TokenStream &stream) {
     // eat for keyword
-    stream.nextToken();
+    auto forKey = std::get<For>(stream.nextToken());
     // variable
     if (!std::holds_alternative<Identifier>(stream.peekToken())) {
         throw std::runtime_error{"Expected 'identifier' after 'for'."};
@@ -629,13 +671,14 @@ std::unique_ptr<ForExprAst> parseForExpr(TokenStream &stream) {
         throw std::runtime_error{"Expected 'in'"};
     }
     auto body = parseExpr(stream);
-    return std::make_unique<ForExprAst>(std::move(variable), std::move(init), std::move(endCondition),
+    return std::make_unique<ForExprAst>(forKey, std::move(variable), std::move(init), std::move(endCondition),
                                         std::move(step), std::move(body));
 }
 
 std::unique_ptr<VarExprAst> parseVarExpr(TokenStream &stream) {
     // eat 'var' keyword
-    if (!std::holds_alternative<Var>(stream.nextToken())) {
+    const auto varKey = stream.nextToken();
+    if (!std::holds_alternative<Var>(varKey)) {
         throw std::runtime_error{"Expected 'var'"};
     }
     std::vector<std::tuple<Identifier, std::unique_ptr<ExprAst> > > variables;
@@ -658,7 +701,7 @@ std::unique_ptr<VarExprAst> parseVarExpr(TokenStream &stream) {
         throw std::runtime_error{"Expected 'in'"};
     }
     auto body = parseExpr(stream);
-    return std::make_unique<VarExprAst>(std::move(variables), std::move(body));
+    return std::make_unique<VarExprAst>(std::get<Var>(varKey), std::move(variables), std::move(body));
 }
 
 std::unique_ptr<UnaryExprAst> parseUnaryExpr(TokenStream &stream) {
@@ -840,6 +883,13 @@ public:
     // 二元算符运算表
     std::map<char, std::function<llvm::Value*(llvm::Value *, llvm::Value *, CodeGenContext &)> > BinOpMap;
 
+    // debug 信息生成所需
+    llvm::DICompileUnit *TheCU;
+    std::unique_ptr<llvm::DIBuilder> TheDIBuilder;
+    std::vector<llvm::DIScope *> lexicalBlocks = {};
+    //唯一在用的double类型
+    llvm::DIType *doubleType;
+
     CodeGenContext() {
         TheContext = std::make_unique<llvm::LLVMContext>();
         TheModule = std::make_unique<llvm::Module>("my_module", *TheContext);
@@ -863,6 +913,7 @@ public:
         PB.registerCGSCCAnalyses(*TheCGAM);
         PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
 
+#ifdef enable_optimize
         // 添加kaleidoscope教程中给的一些优化pass
         // Do simple "peephole" optimizations and bit-twiddling optzns.
         TheFPM->addPass(llvm::InstCombinePass());
@@ -875,6 +926,7 @@ public:
 
         // 添加mem2reg的优化pass
         TheFPM->addPass(llvm::PromotePass());
+#endif
 
         // 添加目标二进制文件生成的配置
         // Initialize the target registry etc.
@@ -903,6 +955,21 @@ public:
 
         TheModule->setTargetTriple(TargetTriple);
         TheModule->setDataLayout(TheTM->createDataLayout());
+
+        // debug信息创建
+        TheDIBuilder = std::make_unique<llvm::DIBuilder>(*TheModule);
+        TheCU = TheDIBuilder->createCompileUnit(
+            llvm::dwarf::DW_LANG_C,
+            TheDIBuilder->createFile("code.txt", "."),
+            "Kaleidoscope Compiler",
+            false,
+            "",
+            0
+        );
+        doubleType = TheDIBuilder->createBasicType(
+            "double",
+            64,
+            llvm::dwarf::DW_ATE_float);
     }
 
     void genObjFile(std::string fileName) {
@@ -928,8 +995,15 @@ public:
         llvm::errs() << "Wrote " << fileName << "\n";
     }
 
-    void EnterScope() { NamedValuesStack.emplace_back(); }
-    void ExitScope() { NamedValuesStack.pop_back(); }
+    void EnterScope(llvm::DIScope *scope) {
+        NamedValuesStack.emplace_back();
+        lexicalBlocks.push_back(scope);
+    }
+
+    void ExitScope() {
+        NamedValuesStack.pop_back();
+        lexicalBlocks.pop_back();
+    }
 
     void setBinOp(const char op,
                   const std::function<llvm::Value *(llvm::Value *, llvm::Value *, CodeGenContext &)> &fn) {
@@ -949,6 +1023,26 @@ public:
     }
 
     llvm::Value *LookupName(const std::string &Name);
+
+    void emitLocation(ExprAst *ast) {
+        if (!ast) {
+            Builder->SetCurrentDebugLocation(llvm::DebugLoc());
+            return;
+        }
+        llvm::DIScope *scope;
+        if (lexicalBlocks.empty()) {
+            scope = TheCU;
+        } else {
+            scope = lexicalBlocks.back();
+        }
+        const auto pos = ast->getLocation();
+        Builder->SetCurrentDebugLocation(llvm::DILocation::get(
+            scope->getContext(),
+            pos.line,
+            pos.column,
+            scope
+        ));
+    }
 };
 
 llvm::Value *CodeGenContext::LookupName(const std::string &Name) {
@@ -962,7 +1056,6 @@ llvm::Value *CodeGenContext::LookupName(const std::string &Name) {
 
 
 llvm::Value *DefinitionAst::gen_code(CodeGenContext &ctx) {
-    ctx.EnterScope();
     auto fun = ctx.TheModule->getFunction(this->prototype.identifier.name);
     if (!fun) {
         fun = llvm::dyn_cast<llvm::Function>(this->prototype.gen_code(ctx));
@@ -971,14 +1064,60 @@ llvm::Value *DefinitionAst::gen_code(CodeGenContext &ctx) {
     } else if (!fun->empty()) {
         throw std::runtime_error{"重复定义"};
     }
+    // debug function信息
+    llvm::DIFile *fileScope = ctx.TheCU->getFile();
+    llvm::DIType *ret = ctx.doubleType;
+    std::vector<llvm::Metadata *> funTypes = {ret};
+    for (const auto &arg: fun->args()) {
+        funTypes.emplace_back(ctx.doubleType);
+    }
+    const auto funTy = ctx.TheDIBuilder->createSubroutineType(
+        ctx.TheDIBuilder->getOrCreateTypeArray(funTypes));
+    llvm::DISubprogram *subprogram = ctx.TheDIBuilder->createFunction(
+        fileScope,
+        this->prototype.identifier.name,
+        llvm::StringRef(),
+        fileScope,
+        this->prototype.identifier.loc.start.line,
+        funTy,
+        this->prototype.identifier.loc.start.line,
+        llvm::DINode::FlagPrototyped,
+        llvm::DISubprogram::SPFlagDefinition
+    );
+    fun->setSubprogram(subprogram);
+
+    // 开始创建ir
+    ctx.EnterScope(subprogram);
 
     auto enter_block = llvm::BasicBlock::Create(*ctx.TheContext, "entry", fun);
     ctx.Builder->SetInsertPoint(enter_block);
 
+    ctx.emitLocation(nullptr); // clear 行信息，因为这些alloca指令是不存在源码对应的。
+    unsigned argIdx = 1; // argNo从1开始
     for (auto &arg: fun->args()) {
         // 把函数的参数的值放到变量空间中
+        const auto argLineNo = this->prototype.args[argIdx - 1].loc.start.line;
+        const auto argColumn = this->prototype.args[argIdx - 1].loc.start.column;
         const auto arg_ptr = ctx.allocaVar(*fun, std::string(arg.getName()));
+        auto D = ctx.TheDIBuilder->createParameterVariable(
+            subprogram,
+            arg.getName(),
+            argIdx,
+            fileScope,
+            argLineNo,
+            ctx.doubleType,
+            true
+        );
+        // 插入declare指令，这个需要注意插入的位置了。
+        ctx.TheDIBuilder->insertDeclare(arg_ptr, D,
+                                        ctx.TheDIBuilder->createExpression(),
+                                        llvm::DILocation::get(subprogram->getContext(),
+                                                              argLineNo,
+                                                              argColumn,
+                                                              subprogram),
+                                        ctx.Builder->GetInsertBlock());
         ctx.Builder->CreateStore(&arg, arg_ptr);
+        argIdx++;
     }
 
     llvm::Value *retValue = this->body->gen_code(ctx);
@@ -987,6 +1126,7 @@ llvm::Value *DefinitionAst::gen_code(CodeGenContext &ctx) {
     // 调用pass进行优化
     ctx.TheFPM->run(*fun, *ctx.TheFAM);
     ctx.ExitScope();
+    // 结束创建ir
 
     // 如果是binary操作符自定义函数，需要注册到BinOpMap中
     if (this->prototype.precedence.has_value()) {
@@ -1025,6 +1165,7 @@ llvm::Value *PrototypeAst::gen_code(CodeGenContext &ctx) {
 }
 
 llvm::Value *NumberExprAst::gen_code(CodeGenContext &ctx) {
+    ctx.emitLocation(this);
     return llvm::ConstantFP::get(*ctx.TheContext, llvm::APFloat(this->number.getValue()));
 }
 
@@ -1034,6 +1175,7 @@ llvm::Value *VariableExprAst::gen_code(CodeGenContext &ctx) {
     if (!v) {
         throw std::runtime_error{"引用变量不存在"};
     }
+    ctx.emitLocation(this);
     return ctx.Builder->CreateLoad(llvm::Type::getDoubleTy(*ctx.TheContext), v);
 }
 
@@ -1043,6 +1185,7 @@ llvm::Value *BinaryExprAst::gen_code(CodeGenContext &ctx) {
         if (const auto left = dynamic_cast<VariableExprAst *>(this->left.get())) {
             auto l = ctx.LookupName(left->identifier.name);
             auto r = right->gen_code(ctx);
+            ctx.emitLocation(this);
             ctx.BinOpMap[ops](l, r, ctx);
             return r;
         }
@@ -1054,6 +1197,7 @@ llvm::Value *BinaryExprAst::gen_code(CodeGenContext &ctx) {
         throw std::runtime_error{"binary lacked."};
     }
     if (ctx.BinOpMap[ops]) {
+        ctx.emitLocation(this);
         return ctx.BinOpMap[ops](l, r, ctx);
     }
     throw std::runtime_error{"binary gen failed."};
@@ -1066,12 +1210,13 @@ llvm::Value *UnaryExprAst::gen_code(CodeGenContext &ctx) {
         throw std::runtime_error{"Unknown unary referenced"};
     }
     const auto arg = this->operand->gen_code(ctx);
-
+    ctx.emitLocation(this);
     return ctx.Builder->CreateCall(fun, arg, "unarycall");
 }
 
 llvm::Value *IfExprAst::gen_code(CodeGenContext &ctx) {
     // entry, for condition
+    ctx.emitLocation(this); // 针对condition的位置
     auto condV = this->condition->gen_code(ctx);
     condV = ctx.Builder->CreateFCmpONE(condV, llvm::ConstantFP::get(*ctx.TheContext, llvm::APFloat(0.0)), "ifcond");
     // 这里就先这么写了，下一个练手项目再做好scope的管理。
@@ -1098,6 +1243,7 @@ llvm::Value *IfExprAst::gen_code(CodeGenContext &ctx) {
     auto elseBBOut = ctx.Builder->GetInsertBlock();
 
     // if merge out
+    ctx.emitLocation(this); // 如果else的gen修改了location,要改回来，针对merge.
     fun->insert(fun->end(), mergeBB);
     ctx.Builder->SetInsertPoint(mergeBB);
     auto pn = ctx.Builder->CreatePHI(llvm::Type::getDoubleTy(*ctx.TheContext), 2, "iftemp");
@@ -1107,16 +1253,50 @@ llvm::Value *IfExprAst::gen_code(CodeGenContext &ctx) {
 }
 
 llvm::Value *ForExprAst::gen_code(CodeGenContext &ctx) {
-    ctx.EnterScope();
     auto fun = ctx.Builder->GetInsertBlock()->getParent();
     auto preLoopBB = ctx.Builder->GetInsertBlock();
     auto loopBB = llvm::BasicBlock::Create(*ctx.TheContext, "loopBB");
     auto loopEndBB = llvm::BasicBlock::Create(*ctx.TheContext, "loopEndBB");
+    // for的debug信息
+    llvm::DIScope *parentSP;
+    if (ctx.lexicalBlocks.empty()) {
+        parentSP = ctx.TheCU;
+    } else {
+        parentSP = ctx.lexicalBlocks.back();
+    }
+    llvm::DIFile *file = ctx.TheDIBuilder->createFile(ctx.TheCU->getFilename(),
+                                                      ctx.TheCU->getDirectory());
+    const auto sp = ctx.TheDIBuilder->createLexicalBlock(
+        parentSP,
+        file,
+        this->getLocation().line,
+        this->getLocation().column);
+
+    // 开始ir生成
+    ctx.EnterScope(sp);
+    ctx.emitLocation(this);
+
     // declare var
     if (!ctx.allocaVar(*fun, this->var.name)) {
         throw std::runtime_error{"重复的var."};
     }
     const auto loopVar = ctx.LookupName(this->var.name);
+    const auto D = ctx.TheDIBuilder->createAutoVariable(
+        sp,
+        var.name,
+        file,
+        var.loc.start.line,
+        ctx.doubleType,
+        true);
+    ctx.TheDIBuilder->insertDeclare(
+        loopVar,
+        D,
+        ctx.TheDIBuilder->createExpression(),
+        llvm::DILocation::get(sp->getContext(),
+                              var.loc.start.line,
+                              var.loc.start.column,
+                              sp),
+        ctx.Builder->GetInsertBlock());
     ctx.Builder->CreateStore(
         llvm::ConstantFP::get(llvm::Type::getDoubleTy(*ctx.TheContext), this->init.getValue()),
         loopVar);
@@ -1156,22 +1336,52 @@ llvm::Value *ForExprAst::gen_code(CodeGenContext &ctx) {
                                           1, "loopret");
     loopRet->addIncoming(loopE, loopBBOut);
     ctx.ExitScope();
+    // 结束ir生成
 
     return loopRet;
 }
 
 llvm::Value *VarExprAst::gen_code(CodeGenContext &ctx) {
-    ctx.EnterScope();
     const auto fun = ctx.Builder->GetInsertBlock()->getParent();
+    // debug信息
+    llvm::DIScope *scope = ctx.lexicalBlocks.back();
+    if (!scope) {
+        scope = ctx.TheCU;
+    }
+    const auto sp = ctx.TheDIBuilder->createLexicalBlock(
+        scope,
+        ctx.TheCU->getFile(),
+        this->getLocation().line,
+        this->getLocation().column
+    );
+
+    // 生成ir
+    ctx.EnterScope(sp);
+    ctx.emitLocation(this);
     for (const auto &[id,expr]: this->variables) {
         const auto alloc = ctx.allocaVar(*fun, id.name);
         if (!alloc) {
             throw std::runtime_error{"try declare repeat name"};
         }
+        const auto D = ctx.TheDIBuilder->createAutoVariable(
+            sp,
+            id.name,
+            ctx.TheCU->getFile(),
+            id.loc.start.line,
+            ctx.doubleType,
+            true
+        );
+        ctx.TheDIBuilder->insertDeclare(
+            alloc,
+            D,
+            ctx.TheDIBuilder->createExpression(),
+            llvm::DILocation::get(sp->getContext(), id.loc.start.line, id.loc.start.column, sp),
+            ctx.Builder->GetInsertBlock());
         ctx.Builder->CreateStore(expr->gen_code(ctx), alloc);
     }
     const auto ret = body->gen_code(ctx);
     ctx.ExitScope();
+    // 结束ir生成
     return ret;
 }
 
@@ -1260,6 +1470,7 @@ int main() {
     try {
         mainLoop(stream, *ctx);
         ctx->TheModule->print(llvm::outs(), nullptr); //print(llvm::outs());
+        ctx->TheDIBuilder->finalize();
         ctx->genObjFile(std::string("code_out.o"));
     } catch (std::exception &e) {
         std::cerr << "报错信息：" << e.what() << "===================\n" << std::endl;
