@@ -253,8 +253,10 @@ public:
     }
 };
 
-// NOLINTNEXTLINE(readability-make-member-function-const)
-void a() {
+void debug(const auto str, std::ostream *stream = &std::cerr) {
+#if 0
+    *stream << str;
+#endif
 }
 
 Token TokenStream::nextToken() {
@@ -273,12 +275,13 @@ Token TokenStream::nextToken() {
             auto has_comment = false;
             while (stream->peek().value_or('\n') != '\n') {
                 if (!has_comment) {
-                    std::cout << "comment: ";
+                    debug("comment: ");
                     has_comment = true;
                 }
-                std::cout << stream->next().value();
+                auto c = stream->next().value();
+                debug(c);
             }
-            if (has_comment) std::cout << '\n';
+            if (has_comment) debug('\n');
         } else {
             break;
         }
@@ -887,7 +890,9 @@ public:
         std::string Error;
 
         const auto TargetTriple = llvm::Triple(llvm::sys::getDefaultTargetTriple());
-        std::cout << "TargetTriple: " << llvm::sys::getDefaultTargetTriple() << std::endl;
+        debug("TargetTriple: ");
+        debug(llvm::sys::getDefaultTargetTriple().c_str());
+        debug('\n');
         auto Target = llvm::TargetRegistry::lookupTarget(TargetTriple, Error);
         if (Target == nullptr) {
             std::cerr << Error << std::endl;
@@ -920,7 +925,7 @@ public:
 
         pass.run(*TheModule);
         dest.flush();
-        llvm::outs() << "Wrote " << fileName << "\n";
+        llvm::errs() << "Wrote " << fileName << "\n";
     }
 
     void EnterScope() { NamedValuesStack.emplace_back(); }
@@ -1254,7 +1259,7 @@ int main() {
     auto stream = TokenStream{std::move(std::make_unique<InputCharStream>())};
     try {
         mainLoop(stream, *ctx);
-        ctx->TheModule->print(llvm::errs(), nullptr); //print(llvm::outs());
+        ctx->TheModule->print(llvm::outs(), nullptr); //print(llvm::outs());
         ctx->genObjFile(std::string("code_out.o"));
     } catch (std::exception &e) {
         std::cerr << "报错信息：" << e.what() << "===================\n" << std::endl;
