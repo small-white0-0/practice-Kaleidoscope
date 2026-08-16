@@ -25,6 +25,16 @@
 #include "llvm/Transforms/Scalar/SimplifyCFG.h"
 #include "llvm/Transforms/Utils/Mem2Reg.h"
 
+
+#include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetOptions.h"
+#include "llvm/TargetParser/Host.h"
+#include "llvm/IR/LegacyPassManager.h"
+#include "llvm/Support/TargetSelect.h"
+
 class CodeGenContext;
 
 struct Position {
@@ -808,6 +818,9 @@ public:
     std::unique_ptr<llvm::Module> TheModule;
     std::unique_ptr<llvm::IRBuilder<> > Builder;
 
+    // LLVM 后端对象
+    std::unique_ptr<llvm::TargetMachine> TheTM;
+
     // llvm pass 对象
     std::unique_ptr<llvm::FunctionPassManager> TheFPM;
 
@@ -817,7 +830,6 @@ public:
     std::unique_ptr<llvm::CGSCCAnalysisManager> TheCGAM;
     std::unique_ptr<llvm::PassInstrumentationCallbacks> ThePIC;
     std::unique_ptr<llvm::StandardInstrumentations> TheSI;
-
 
     // 符号表
     std::vector<std::map<std::string, llvm::AllocaInst *> > NamedValuesStack;
@@ -860,6 +872,55 @@ public:
 
         // 添加mem2reg的优化pass
         TheFPM->addPass(llvm::PromotePass());
+
+        // 添加目标二进制文件生成的配置
+        // Initialize the target registry etc.
+        // 不预先初始化进行注册的话，后续的lookupTarget会无法获取到。
+        llvm::InitializeAllTargetInfos();
+        llvm::InitializeAllTargets();
+        llvm::InitializeAllTargetMCs();
+        llvm::InitializeAllAsmParsers();
+        llvm::InitializeAllAsmPrinters();
+        const auto CPU = "generic"; // 通用CPU
+        const auto Features = ""; // 不额外指定feature
+        llvm::TargetOptions opt; // 默认
+        std::string Error;
+
+        const auto TargetTriple = llvm::Triple(llvm::sys::getDefaultTargetTriple());
+        std::cout << "TargetTriple: " << llvm::sys::getDefaultTargetTriple() << std::endl;
+        auto Target = llvm::TargetRegistry::lookupTarget(TargetTriple, Error);
+        if (Target == nullptr) {
+            std::cerr << Error << std::endl;
+            exit(1);
+        }
+        TheTM.reset(Target->createTargetMachine(
+            TargetTriple, CPU, Features, opt, llvm::Reloc::PIC_));
+
+        TheModule->setTargetTriple(TargetTriple);
+        TheModule->setDataLayout(TheTM->createDataLayout());
+    }
+
+    void genObjFile(std::string fileName) {
+        llvm::verifyModule(*TheModule);
+
+        std::error_code EC;
+        llvm::raw_fd_ostream dest(fileName, EC, llvm::sys::fs::OF_None);
+
+        if (EC) {
+            llvm::errs() << "Could not open file: " << EC.message();
+            exit(1);
+        }
+
+        llvm::legacy::PassManager pass;
+        auto FileType = llvm::CodeGenFileType::ObjectFile;
+        if (TheTM->addPassesToEmitFile(pass, dest, nullptr, FileType)) {
+            llvm::errs() << "TheTargetMachine can't emit a file of this type";
+            exit(1);
+        }
+
+        pass.run(*TheModule);
+        dest.flush();
+        llvm::outs() << "Wrote " << fileName << "\n";
     }
 
     void EnterScope() { NamedValuesStack.emplace_back(); }
@@ -1194,6 +1255,7 @@ int main() {
     try {
         mainLoop(stream, *ctx);
         ctx->TheModule->print(llvm::errs(), nullptr); //print(llvm::outs());
+        ctx->genObjFile(std::string("code_out.o"));
     } catch (std::exception &e) {
         std::cerr << "报错信息：" << e.what() << "===================\n" << std::endl;
         return 1;
