@@ -955,6 +955,9 @@ public:
 
         TheModule->setTargetTriple(TargetTriple);
         TheModule->setDataLayout(TheTM->createDataLayout());
+        TheModule->addModuleFlag(llvm::Module::Warning, "Debug Info Version",
+                                 llvm::DEBUG_METADATA_VERSION);
+        TheModule->addModuleFlag(llvm::Module::Warning, "Dwarf Version", 4);
 
         // debug信息创建
         TheDIBuilder = std::make_unique<llvm::DIBuilder>(*TheModule);
@@ -1121,6 +1124,7 @@ llvm::Value *DefinitionAst::gen_code(CodeGenContext &ctx) {
     }
 
     llvm::Value *retValue = this->body->gen_code(ctx);
+    ctx.emitLocation(this->body.get());
     ctx.Builder->CreateRet(retValue);
     llvm::verifyFunction(*fun);
     // 调用pass进行优化
@@ -1344,9 +1348,9 @@ llvm::Value *ForExprAst::gen_code(CodeGenContext &ctx) {
 llvm::Value *VarExprAst::gen_code(CodeGenContext &ctx) {
     const auto fun = ctx.Builder->GetInsertBlock()->getParent();
     // debug信息
-    llvm::DIScope *scope = ctx.lexicalBlocks.back();
-    if (!scope) {
-        scope = ctx.TheCU;
+    llvm::DIScope *scope = ctx.TheCU;
+    if (!ctx.lexicalBlocks.empty()) {
+        scope = ctx.lexicalBlocks.back();
     }
     const auto sp = ctx.TheDIBuilder->createLexicalBlock(
         scope,
@@ -1400,7 +1404,7 @@ llvm::Value *CallExprAst::gen_code(CodeGenContext &ctx) {
         if (!ArgsV.back())
             return nullptr;
     }
-
+    ctx.emitLocation(this);
     return ctx.Builder->CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
