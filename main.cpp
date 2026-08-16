@@ -23,6 +23,7 @@
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Scalar/Reassociate.h"
 #include "llvm/Transforms/Scalar/SimplifyCFG.h"
+#include "llvm/Transforms/Utils/Mem2Reg.h"
 
 class CodeGenContext;
 
@@ -173,6 +174,11 @@ struct Binary {
     bool operator==(const Binary &) const { return true; }
 };
 
+struct Var {
+    Location loc;
+    bool operator==(const Binary &) const { return true; }
+};
+
 struct Identifier {
     std::string name;
     Location loc;
@@ -209,7 +215,7 @@ struct Char {
     }
 };
 
-using Token = std::variant<std::monostate, Def, Extern, If, Then, Else, For, In, Unary, Binary, Identifier, Number,
+using Token = std::variant<std::monostate, Def, Extern, If, Then, Else, For, In, Unary, Binary, Var, Identifier, Number,
     Char>;
 
 class TokenStream {
@@ -307,6 +313,8 @@ Token TokenStream::nextToken() {
             next = Unary{loc};
         } else if (id == "binary") {
             next = Binary{loc};
+        } else if (id == "var") {
+            next = Var{loc};
         } else {
             next = Identifier{id, loc};
         }
@@ -360,11 +368,11 @@ public:
     llvm::Value *gen_code(CodeGenContext &ctx) override;
 };
 
-class VarExprAst final : public ExprAst {
+class VariableExprAst final : public ExprAst {
 public:
     Identifier identifier;
 
-    explicit VarExprAst(Identifier identifier) : identifier{std::move(identifier)} {
+    explicit VariableExprAst(Identifier identifier) : identifier{std::move(identifier)} {
     }
 
     llvm::Value *gen_code(CodeGenContext &ctx) override;
@@ -436,6 +444,18 @@ public:
                std::optional<Number> step, std::unique_ptr<ExprAst> body)
         : var(std::move(var)), init(std::move(init)), endCondition(std::move(endCondition)),
           step(std::move(step)), body(std::move(body)) {
+    }
+
+    llvm::Value *gen_code(CodeGenContext &ctx) override;
+};
+
+class VarExprAst final : public ExprAst {
+public:
+    std::vector<std::tuple<Identifier, std::unique_ptr<ExprAst> > > variables;
+    std::unique_ptr<ExprAst> body;
+
+    VarExprAst(std::vector<std::tuple<Identifier, std::unique_ptr<ExprAst> > > variables,
+               std::unique_ptr<ExprAst> body) : variables(std::move(variables)), body(std::move(body)) {
     }
 
     llvm::Value *gen_code(CodeGenContext &ctx) override;
@@ -513,7 +533,7 @@ std::unique_ptr<ExprAst> parsePrimaryExpr(TokenStream &stream) {
         auto id = std::get<Identifier>(first_token);
         // only identifier
         if (!isChar(stream.peekToken(), '(')) {
-            return std::make_unique<VarExprAst>(id);
+            return std::make_unique<VariableExprAst>(id);
         }
         // for call function
         stream.nextToken(); // eat (
@@ -600,6 +620,34 @@ std::unique_ptr<ForExprAst> parseForExpr(TokenStream &stream) {
                                         std::move(step), std::move(body));
 }
 
+std::unique_ptr<VarExprAst> parseVarExpr(TokenStream &stream) {
+    // eat 'var' keyword
+    if (!std::holds_alternative<Var>(stream.nextToken())) {
+        throw std::runtime_error{"Expected 'var'"};
+    }
+    std::vector<std::tuple<Identifier, std::unique_ptr<ExprAst> > > variables;
+    // 处理 identifier = expr (, identifier = expr )*
+    do {
+        auto id = std::get<Identifier>(stream.nextToken());
+        if (!isChar(stream.nextToken(), '=')) {
+            throw std::runtime_error{"Expected '='"};
+        }
+        auto expr = parseExpr(stream);
+        variables.emplace_back(id, std::move(expr));
+        if (isChar(stream.peekToken(), ',')) {
+            stream.nextToken();
+        } else {
+            // 没有分隔符，认为该结束了。
+            break;
+        }
+    } while (std::holds_alternative<Identifier>(stream.peekToken()));
+    if (!std::holds_alternative<In>(stream.nextToken())) {
+        throw std::runtime_error{"Expected 'in'"};
+    }
+    auto body = parseExpr(stream);
+    return std::make_unique<VarExprAst>(std::move(variables), std::move(body));
+}
+
 std::unique_ptr<UnaryExprAst> parseUnaryExpr(TokenStream &stream) {
     auto op = std::get<Char>(stream.nextToken());
     auto primaryExpr = parsePrimaryExpr(stream);
@@ -647,6 +695,9 @@ std::unique_ptr<ExprAst> parseExpr(TokenStream &stream) {
     }
     if (std::holds_alternative<For>(firstToken)) {
         return parseForExpr(stream);
+    }
+    if (std::holds_alternative<Var>(firstToken)) {
+        return parseVarExpr(stream);
     }
     // if 'char' start, it should be a unary operate.
     std::unique_ptr<ExprAst> left;
@@ -769,7 +820,7 @@ public:
 
 
     // 符号表
-    std::vector<std::map<std::string, llvm::Value *> > NamedValuesStack;
+    std::vector<std::map<std::string, llvm::AllocaInst *> > NamedValuesStack;
 
     // 二元算符运算表
     std::map<char, std::function<llvm::Value*(llvm::Value *, llvm::Value *, CodeGenContext &)> > BinOpMap;
@@ -806,6 +857,9 @@ public:
         TheFPM->addPass(llvm::GVNPass());
         // Simplify the control flow graph (deleting unreachable blocks, etc).
         TheFPM->addPass(llvm::SimplifyCFGPass());
+
+        // 添加mem2reg的优化pass
+        TheFPM->addPass(llvm::PromotePass());
     }
 
     void EnterScope() { NamedValuesStack.emplace_back(); }
@@ -816,13 +870,16 @@ public:
         BinOpMap[op] = fn;
     }
 
-    bool addName(const std::string &name, llvm::Value *value) {
+    llvm::AllocaInst *allocaVar(llvm::Function &fun, const std::string &name) {
         auto &cur_scope = NamedValuesStack.back();
+        // 检查是否重名
         if (const auto it = cur_scope.find(name); it != cur_scope.end()) {
-            return false;
+            return nullptr;
         }
-        cur_scope[name] = value;
-        return true;
+        // 在函数开头插入alloca
+        auto tempB = llvm::IRBuilder<>(&fun.getEntryBlock(), fun.getEntryBlock().begin());
+        cur_scope[name] = tempB.CreateAlloca(llvm::Type::getDoubleTy(*TheContext), nullptr, name);
+        return cur_scope[name];
     }
 
     llvm::Value *LookupName(const std::string &Name);
@@ -853,7 +910,9 @@ llvm::Value *DefinitionAst::gen_code(CodeGenContext &ctx) {
     ctx.Builder->SetInsertPoint(enter_block);
 
     for (auto &arg: fun->args()) {
-        ctx.addName(std::string(arg.getName()), &arg);
+        // 把函数的参数的值放到变量空间中
+        const auto arg_ptr = ctx.allocaVar(*fun, std::string(arg.getName()));
+        ctx.Builder->CreateStore(&arg, arg_ptr);
     }
 
     llvm::Value *retValue = this->body->gen_code(ctx);
@@ -904,16 +963,25 @@ llvm::Value *NumberExprAst::gen_code(CodeGenContext &ctx) {
 }
 
 
-llvm::Value *VarExprAst::gen_code(CodeGenContext &ctx) {
+llvm::Value *VariableExprAst::gen_code(CodeGenContext &ctx) {
     auto v = ctx.LookupName(identifier.name);
     if (!v) {
         throw std::runtime_error{"引用变量不存在"};
     }
-    return v;
+    return ctx.Builder->CreateLoad(llvm::Type::getDoubleTy(*ctx.TheContext), v);
 }
 
 
 llvm::Value *BinaryExprAst::gen_code(CodeGenContext &ctx) {
+    if (this->ops == '=') {
+        if (const auto left = dynamic_cast<VariableExprAst *>(this->left.get())) {
+            auto l = ctx.LookupName(left->identifier.name);
+            auto r = right->gen_code(ctx);
+            ctx.BinOpMap[ops](l, r, ctx);
+            return r;
+        }
+        throw std::runtime_error{"left of '=' should be a variable."};
+    }
     auto l = left->gen_code(ctx);
     auto r = right->gen_code(ctx);
     if (!l || !r) {
@@ -978,34 +1046,41 @@ llvm::Value *ForExprAst::gen_code(CodeGenContext &ctx) {
     auto preLoopBB = ctx.Builder->GetInsertBlock();
     auto loopBB = llvm::BasicBlock::Create(*ctx.TheContext, "loopBB");
     auto loopEndBB = llvm::BasicBlock::Create(*ctx.TheContext, "loopEndBB");
-    // enter loop
+    // declare var
+    if (!ctx.allocaVar(*fun, this->var.name)) {
+        throw std::runtime_error{"重复的var."};
+    }
+    const auto loopVar = ctx.LookupName(this->var.name);
+    ctx.Builder->CreateStore(
+        llvm::ConstantFP::get(llvm::Type::getDoubleTy(*ctx.TheContext), this->init.getValue()),
+        loopVar);
     ctx.Builder->CreateBr(loopBB);
+
+    // enter loop
     fun->insert(fun->end(), loopBB);
     ctx.Builder->SetInsertPoint(loopBB);
-    // get init value as 循环变量
-    auto loopV = ctx.Builder->CreatePHI(llvm::Type::getDoubleTy(*ctx.TheContext),
-                                        2, this->var.name);
-    ctx.addName(this->var.name, loopV);
-    loopV->addIncoming(llvm::ConstantFP::get(llvm::Type::getDoubleTy(*ctx.TheContext), this->init.getValue()),
-                       preLoopBB);
-
-    // 计算下一次的变量值
-    llvm::Value *nextVar;
-    if (this->step) {
-        nextVar = ctx.Builder->CreateFAdd(
-            loopV, llvm::ConstantFP::get(llvm::Type::getDoubleTy(*ctx.TheContext), this->step->getValue()), "nextVar");
-    } else {
-        nextVar = ctx.Builder->CreateFAdd(
-            loopV, llvm::ConstantFP::get(*ctx.TheContext, llvm::APFloat(1.0)), "nextVar");
-    }
     // 执行表达式
     auto loopE = this->body->gen_code(ctx);
+
+    // 更新迭代变量，这里重新加载，确保在body中对变量的修改有效。
+    const auto curValue = ctx.Builder->CreateLoad(llvm::Type::getDoubleTy(*ctx.TheContext), loopVar);
+    if (this->step.has_value()) {
+        const auto nextValue = ctx.Builder->CreateFAdd(
+            curValue, llvm::ConstantFP::get(*ctx.TheContext, llvm::APFloat(this->step->getValue())),
+            "next");
+        ctx.Builder->CreateStore(nextValue, loopVar);
+    } else {
+        const auto nextValue = ctx.Builder->CreateFAdd(
+            curValue, llvm::ConstantFP::get(*ctx.TheContext, llvm::APFloat(1.0)),
+            "next");
+        ctx.Builder->CreateStore(nextValue, loopVar);
+    }
+
     // 判断是否结束
     auto loopEndCond = this->endCondition->gen_code(ctx);
     loopEndCond = ctx.Builder->CreateFCmpONE(loopEndCond, llvm::ConstantFP::get(*ctx.TheContext, llvm::APFloat(0.0)));
-    // 补完loopV的赋值第二部分
+    // 更新loopB的实际出口block
     auto loopBBOut = ctx.Builder->GetInsertBlock();
-    loopV->addIncoming(nextVar, loopBBOut);
     // jump
     ctx.Builder->CreateCondBr(loopEndCond, loopBB, loopEndBB);
     // loop结束了
@@ -1017,6 +1092,21 @@ llvm::Value *ForExprAst::gen_code(CodeGenContext &ctx) {
     ctx.ExitScope();
 
     return loopRet;
+}
+
+llvm::Value *VarExprAst::gen_code(CodeGenContext &ctx) {
+    ctx.EnterScope();
+    const auto fun = ctx.Builder->GetInsertBlock()->getParent();
+    for (const auto &[id,expr]: this->variables) {
+        const auto alloc = ctx.allocaVar(*fun, id.name);
+        if (!alloc) {
+            throw std::runtime_error{"try declare repeat name"};
+        }
+        ctx.Builder->CreateStore(expr->gen_code(ctx), alloc);
+    }
+    const auto ret = body->gen_code(ctx);
+    ctx.ExitScope();
+    return ret;
 }
 
 llvm::Value *CallExprAst::gen_code(CodeGenContext &ctx) {
@@ -1063,6 +1153,7 @@ void mainLoop(TokenStream &stream, CodeGenContext &ctx) {
 
 int main() {
     //
+    GLOBAL_BINARY_OPS['='] = 1;
     GLOBAL_BINARY_OPS['<'] = 5;
     GLOBAL_BINARY_OPS['>'] = 5;
     GLOBAL_BINARY_OPS['+'] = 10;
@@ -1070,6 +1161,12 @@ int main() {
     GLOBAL_BINARY_OPS['*'] = 20;
     GLOBAL_BINARY_OPS['/'] = 20;
     auto ctx = std::make_unique<CodeGenContext>();
+    ctx->setBinOp('=', [](auto l, auto r, CodeGenContext &ctx) {
+        if (!l->getType()->isPointerTy()) {
+            throw std::runtime_error{"left value of '=' needs pointer type"};
+        }
+        return ctx.Builder->CreateStore(r, l);
+    });
     ctx->setBinOp('<', [](auto l, auto r, CodeGenContext &ctx) {
         auto L = ctx.Builder->CreateFCmpULT(l, r, "cmptmp");
         // Convert bool 0/1 to double 0.0 or 1.0

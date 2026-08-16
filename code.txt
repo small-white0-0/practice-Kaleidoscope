@@ -78,3 +78,66 @@ printnum(
 # 整个表达式计算结果：1 + (-11) + 2 + (-9) + 1 + 10 = -6
 
 def abs(x) if x < 0 then -x else x;   # ← 不支持，会报错。因为缺失一元取负会报错，后面添加unary之后，就可以正确编译。
+
+
+
+# ========== var 变量声明测试 ==========
+
+# 1. 最基础：单变量声明
+def testVar1() var x = 10 in x + 1;
+
+# 2. 多变量同时声明
+def testVar2() var a = 1, b = 2 in a + b;
+
+# 3. 变量依赖：后面变量引用前面变量
+def testVar3() var a = 3, b = a * 2 in a + b;
+
+# 4. 变量参与复杂表达式
+def testVar4(x) var y = x * 2, z = y + 1 in z / 3;
+
+# 5. 变量与 if 结合
+def testVar5(x) var t = x < 0 in if t then 0-x else x;
+
+# 6. 变量与 for 循环结合
+def testVar6() var s = 0 in for i = 1, i < 5 in s = s + i;
+
+# 7. 嵌套 var（作用域遮蔽）
+def testVar7()
+    var x = 10 in
+        var x = 100 in
+            x + 1;
+
+# 8. 变量与自定义运算符结合
+def testVar8()
+    var a = 5 | 0, b = 10 % 3 in
+        a + b;
+
+# 9. 变量存储函数调用结果
+def testVar9(x) var s = sin(x), c = cos(x) in s * s + c * c;
+
+# 10. 多语句函数体中使用 var（如果语法支持分号分隔表达式序列）
+def testVar10(x)
+    var a = x + 1 in
+        var b = a * 2 in
+            b - 1;
+
+# 11. 变量默认值与参数互动
+def testVar11(a, b)
+    var min = if a < b then a else b,
+        max = if a < b then b else a in
+        max - min;
+
+# 12. 用于累加/计数场景
+def sumTo(n)
+    var total = 0 in
+        for i = 1, i < n+1 in total = total + i;
+
+# 13. 变量与一元运算符
+def testVar13()
+    var x = 8 in
+        (~ x) + ($ x);
+
+# 14. 浮点变量声明
+def testVar14()
+    var pi = 3.14159, r = 2.0 in
+        pi * r * r;
