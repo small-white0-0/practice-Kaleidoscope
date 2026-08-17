@@ -38,6 +38,7 @@
 #include "llvm/IR/DIBuilder.h"
 
 // #define enable_optimize
+// #define gen_obj_file
 
 class CodeGenContext;
 
@@ -1475,7 +1476,9 @@ int main() {
         mainLoop(stream, *ctx);
         ctx->TheModule->print(llvm::outs(), nullptr); //print(llvm::outs());
         ctx->TheDIBuilder->finalize();
+#ifdef gen_obj_file
         ctx->genObjFile(std::string("code_out.o"));
+#endif
     } catch (std::exception &e) {
         std::cerr << "报错信息：" << e.what() << "===================\n" << std::endl;
         return 1;
