@@ -51,7 +51,12 @@ def testFor2() for i = 1, i < 10, 2 in sin(i);
 def binary | 2 (lhs, rhs) if lhs then 1 else if rhs then 1 else 0;
 
 #自定义二元取模（非内置）
-def binary % 6 (lhs, rhs) lhs - (lhs / rhs) * rhs;
+#有精度问题和不可接受非正数，就先这样吧。
+def binary % 6 (lhs, rhs)
+    if lhs < rhs then
+        lhs
+    else
+        ((lhs - rhs) % rhs);
 
 #自定义一元的取反，虽然和内置的`-`符号一样，但是因为一元运算符不记录到BinOpMap中，不会冲突.
 def  unary-(v) 0 - v;
@@ -75,7 +80,7 @@ printnum(
     + ($ (~ 8))                 # 转换为布尔 => 1（非零）
     + (if (1 | 0) then 10 else 20)  # if 表达式 => 10
 );
-# 整个表达式计算结果：1 + (-11) + 2 + (-9) + 1 + 10 = -6
+# 整个表达式计算结果：1 + 2 + (-9) + 1 + 10 = 5
 
 def abs(x) if x < 0 then -x else x;   # ← 不支持，会报错。因为缺失一元取负会报错，后面添加unary之后，就可以正确编译。
 
