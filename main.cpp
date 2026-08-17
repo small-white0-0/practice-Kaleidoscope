@@ -1161,9 +1161,10 @@ llvm::Value *DefinitionAst::gen_code(CodeGenContext &ctx) {
         ctx.Builder->CreateStore(&arg, arg_ptr);
         argIdx++;
     }
-
-    llvm::Value *retValue = this->body->gen_code(ctx);
+    // 发出地址，目的只是在后续生产代码时未指定的位置的情况下能够自动继承。
+    // 不适合在生成之后再使用，因为这个可能导致行号增加之后，突然的回退跳跃。
     ctx.emitLocation(this->body.get());
+    llvm::Value *retValue = this->body->gen_code(ctx);
     ctx.Builder->CreateRet(retValue);
     llvm::verifyFunction(*fun);
     // 调用pass进行优化
@@ -1273,7 +1274,6 @@ llvm::Value *IfExprAst::gen_code(CodeGenContext &ctx) {
     auto elseBBOut = ctx.Builder->GetInsertBlock();
 
     // if merge out
-    ctx.emitLocation(this); // 如果else的gen修改了location,要改回来，针对merge.
     fun->insert(fun->end(), mergeBB);
     ctx.Builder->SetInsertPoint(mergeBB);
     auto pn = ctx.Builder->CreatePHI(llvm::Type::getDoubleTy(*ctx.TheContext), 2, "iftemp");
