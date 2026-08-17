@@ -1106,6 +1106,7 @@ llvm::Value *DefinitionAst::gen_code(CodeGenContext &ctx) {
     } else if (!fun->empty()) {
         throw std::runtime_error{"重复定义"};
     }
+    fun->addFnAttr("frame-pointer", "all");
     // debug function信息
     llvm::DIFile *fileScope = ctx.TheCU->getFile();
     llvm::DIType *ret = ctx.doubleType;
@@ -1186,6 +1187,7 @@ llvm::Value *PrototypeAst::gen_code(CodeGenContext &ctx) {
     auto fun_type = llvm::FunctionType::get(llvm::Type::getDoubleTy(*ctx.TheContext), args_type, false);
     auto fun = llvm::Function::Create(fun_type,
                                       llvm::Function::ExternalLinkage,
+                                      ctx.TheModule->getDataLayout().getProgramAddressSpace(),
                                       this->identifier.name,
                                       ctx.TheModule.get());
     unsigned Idx = 0;
