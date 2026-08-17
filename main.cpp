@@ -831,6 +831,12 @@ PrototypeAst parsePrototype(TokenStream &stream) {
 
 DefinitionAst parseDefinition(TokenStream &stream) {
     auto prototype = parsePrototype(stream);
+    // 提前注册优先级，确保递归定义binary操作时，可以parse时正确获取到优先级
+    if (prototype.precedence.has_value()) {
+        std::string name = prototype.identifier.name;
+        char op = name.back();
+        GLOBAL_BINARY_OPS[op] = prototype.precedence.value();
+    }
     auto body = parseExpr(stream);
     return {prototype, std::move(body)};
 }
@@ -1060,6 +1066,20 @@ llvm::Value *CodeGenContext::LookupName(const std::string &Name) {
 
 
 llvm::Value *DefinitionAst::gen_code(CodeGenContext &ctx) {
+    // 如果是binary操作符自定义函数，需要注册到BinOpMap中
+    // 提前定义，确保递归定义时，可以正常生成。
+    if (this->prototype.precedence.has_value()) {
+        std::string name = this->prototype.identifier.name;
+        char op = name.back();
+        ctx.setBinOp(op, [name](auto l, auto r, CodeGenContext &ctx) {
+            auto fun = ctx.TheModule->getFunction(name);
+            if (!fun) {
+                throw std::runtime_error{"Unknow error for lack binary definition "};
+            }
+            return static_cast<llvm::Value *>(ctx.Builder->CreateCall(fun, std::vector{l, r}));
+        });
+    }
+
     auto fun = ctx.TheModule->getFunction(this->prototype.identifier.name);
     if (!fun) {
         fun = llvm::dyn_cast<llvm::Function>(this->prototype.gen_code(ctx));
@@ -1133,19 +1153,6 @@ llvm::Value *DefinitionAst::gen_code(CodeGenContext &ctx) {
     ctx.ExitScope();
     // 结束创建ir
 
-    // 如果是binary操作符自定义函数，需要注册到BinOpMap中
-    if (this->prototype.precedence.has_value()) {
-        std::string name = this->prototype.identifier.name;
-        char op = name.back();
-        ctx.setBinOp(op, [name](auto l, auto r, CodeGenContext &ctx) {
-            auto fun = ctx.TheModule->getFunction(name);
-            if (!fun) {
-                throw std::runtime_error{"Unknow error for lack binary definition "};
-            }
-            return static_cast<llvm::Value *>(ctx.Builder->CreateCall(fun, std::vector{l, r}));
-        });
-        GLOBAL_BINARY_OPS[op] = this->prototype.precedence.value();
-    }
     return fun;
 }
 
