@@ -432,7 +432,11 @@ public:
     llvm::Value *gen_code(CodeGenContext &ctx) override;
 
     Position getLocation() override {
-        return left->getLocation();
+        // 如果选left，配合左结合的运算符，会一直是第一个操作符的位置，
+        // 对于换行的情况会存在前后跳跃。
+        // 所以改成right,这样至少不会发生不停跳跃的情况。
+        // 虽然个人感觉，使用ops的位置会更好，但是，因为解析的时候，没有保留Char对象，位置丢了，就这样吧。
+        return right->getLocation();
     }
 };
 
