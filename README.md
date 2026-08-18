@@ -72,7 +72,6 @@ $ echo 'def fib(x) if x < 3 then 1 else fib(x-1)+fib(x-2)' | ./build/practice_Ka
 <pre>
 <details>
 <summary> 查看完整的 LLVM IR 输出 </summary>
-
 ; ModuleID = 'code.txt'
 source_filename = "code.txt"
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
@@ -80,31 +79,24 @@ target triple = "x86_64-pc-linux-gnu"
 
 define double @fib(double %x) #0 !dbg !4 {
 entry:
-  %x1 = alloca double, align 8
-    #dbg_declare(ptr %x1, !9, !DIExpression(), !10)
-  store double %x, ptr %x1, align 8
-  %0 = load double, ptr %x1, align 8, !dbg !11
-  %cmptmp = fcmp ult double %0, 3.000000e+00, !dbg !12
-  %booltmp = uitofp i1 %cmptmp to double, !dbg !12
-  %ifcond = fcmp one double %booltmp, 0.000000e+00, !dbg !12
-  br i1 %ifcond, label %thenBB, label %elseBB, !dbg !12
-
-thenBB:                                           ; preds = %entry
-  br label %ifcont, !dbg !13
+    #dbg_value(double %x, !9, !DIExpression(), !10)
+    #dbg_value(double %x, !9, !DIExpression(), !10)
+  %cmptmp = fcmp ult double %x, 3.000000e+00, !dbg !11
+  br i1 %cmptmp, label %ifcont, label %elseBB, !dbg !11
 
 elseBB:                                           ; preds = %entry
-  %1 = load double, ptr %x1, align 8, !dbg !14
-  %2 = fsub double %1, 1.000000e+00, !dbg !15
-  %calltmp = call double @fib(double %2), !dbg !16
-  %3 = load double, ptr %x1, align 8, !dbg !17
-  %4 = fsub double %3, 2.000000e+00, !dbg !18
-  %calltmp2 = call double @fib(double %4), !dbg !19
-  %5 = fadd double %calltmp, %calltmp2, !dbg !19
-  br label %ifcont, !dbg !19
+    #dbg_value(double %x, !9, !DIExpression(), !10)
+  %0 = fadd double %x, -1.000000e+00, !dbg !12
+  %calltmp = call double @fib(double %0), !dbg !13
+    #dbg_value(double %x, !9, !DIExpression(), !10)
+  %1 = fadd double %x, -2.000000e+00, !dbg !14
+  %calltmp2 = call double @fib(double %1), !dbg !15
+  %2 = fadd double %calltmp, %calltmp2, !dbg !15
+  br label %ifcont, !dbg !15
 
-ifcont:                                           ; preds = %elseBB, %thenBB
-  %iftemp = phi double [ 1.000000e+00, %thenBB ], [ %5, %elseBB ], !dbg !19
-  ret double %iftemp, !dbg !19
+ifcont:                                           ; preds = %entry, %elseBB
+  %iftemp = phi double [ %2, %elseBB ], [ 1.000000e+00, %entry ], !dbg !15
+  ret double %iftemp, !dbg !15
 }
 
 attributes #0 = { "frame-pointer"="all" }
@@ -122,16 +114,12 @@ attributes #0 = { "frame-pointer"="all" }
 !7 = !DIBasicType(name: "double", size: 64, encoding: DW_ATE_float)
 !8 = !{!9}
 !9 = !DILocalVariable(name: "x", arg: 1, scope: !4, file: !3, line: 1, type: !7)
-!10 = !DILocation(line: 1, column: 9, scope: !4)
-!11 = !DILocation(line: 1, column: 15, scope: !4)
-!12 = !DILocation(line: 1, column: 19, scope: !4)
-!13 = !DILocation(line: 1, column: 26, scope: !4)
-!14 = !DILocation(line: 1, column: 37, scope: !4)
-!15 = !DILocation(line: 1, column: 39, scope: !4)
-!16 = !DILocation(line: 1, column: 33, scope: !4)
-!17 = !DILocation(line: 1, column: 46, scope: !4)
-!18 = !DILocation(line: 1, column: 48, scope: !4)
-!19 = !DILocation(line: 1, column: 42, scope: !4)
+!10 = !DILocation(line: 0, scope: !4)
+!11 = !DILocation(line: 1, column: 19, scope: !4)
+!12 = !DILocation(line: 1, column: 39, scope: !4)
+!13 = !DILocation(line: 1, column: 33, scope: !4)
+!14 = !DILocation(line: 1, column: 48, scope: !4)
+!15 = !DILocation(line: 1, column: 42, scope: !4)
 
 </details>
 </pre>
