@@ -39,7 +39,7 @@ Token TokenStream::nextToken() {
         return cur;
     }
     Token next;
-    Position start = this->stream->postion();
+    Position start = this->stream->position();
     // [a-zA-Z][a-zA-Z0-9]*
     if (isalpha(stream->peek().value_or('\0'))) {
         std::string id;
@@ -49,7 +49,7 @@ Token TokenStream::nextToken() {
             id.push_back(stream->next().value());
         }
         // 处理关键字
-        auto loc = Location(std::move(start), stream->postion());
+        auto loc = Location(std::move(start), stream->position());
         if (id == "def") {
             next = Def{loc};
         } else if (id == "extern") {
@@ -87,11 +87,11 @@ Token TokenStream::nextToken() {
                 div *= 10;
             }
         }
-        auto loc = Location(std::move(start), stream->postion());
+        auto loc = Location(std::move(start), stream->position());
         next = Number{value, div, (std::move(loc))};
     } else {
         // 非空白的任意单个字符
-        auto loc = Location(std::move(start), stream->postion());
+        auto loc = Location(std::move(start), stream->position());
         next = Char{stream->next().value(), std::move(loc)};
     }
     assert(!std::holds_alternative<std::monostate>(next));

@@ -22,11 +22,9 @@ public:
     /// 获取并消耗当前流第一个字符。
     virtual std::optional<char> next() =0;
 
-    /// 获取被消耗的字符的最后一个。
-    virtual std::optional<char> last() =0;
-
     /// 获取当前的第一个字符的位置。
-    virtual Position postion() =0;
+    /// 可能返回非字符的位置，应提前使用peek进行判断。
+    virtual Position position() =0;
 };
 
 #endif //PRACTICE_KALEIDOSCOPE_CHAR_STREAM_HPP
