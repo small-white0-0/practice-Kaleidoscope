@@ -9,7 +9,7 @@
 
 CodeGenContext::CodeGenContext() {
     TheContext = std::make_unique<llvm::LLVMContext>();
-    TheModule = std::make_unique<llvm::Module>("my_module", *TheContext);
+    TheModule = std::make_unique<llvm::Module>("code.txt", *TheContext);
     Builder = std::make_unique<llvm::IRBuilder<> >(*TheContext);
 
     TheFPM = std::make_unique<llvm::FunctionPassManager>();
