@@ -8,10 +8,7 @@
 
 #include "llvm/IR/Module.h"
 #include "llvm/IR/IRBuilder.h"
-
-
 #include "llvm/Support/raw_ostream.h"
-
 #include "llvm/IR/DIBuilder.h"
 
 #include "lexer/input_char_stream.hpp"
@@ -85,8 +82,8 @@ int main() {
     auto stream = TokenStream{std::move(std::make_unique<InputCharStream>())};
     try {
         mainLoop(stream, *ctx);
-        ctx->TheModule->print(llvm::outs(), nullptr); //print(llvm::outs());
         ctx->TheDIBuilder->finalize();
+        ctx->TheModule->print(llvm::outs(), nullptr); //print(llvm::outs());
 #ifdef gen_obj_file
         ctx->genObjFile(std::string("code_out.o"));
 #endif
