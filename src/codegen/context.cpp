@@ -6,6 +6,12 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/TargetParser/Host.h"
+#include "llvm/IR/PassManager.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h" // InstCombinePass
+#include "llvm/Transforms/Scalar/Reassociate.h"     // ReassociatePass
+#include "llvm/Transforms/Scalar/GVN.h"             // GVNPass
+#include "llvm/Transforms/Scalar/SimplifyCFG.h"     // SimplifyCFGPass
+#include "llvm/Transforms/Utils/Mem2Reg.h"         // PromotePass (mem2reg)
 
 CodeGenContext::CodeGenContext() {
     TheContext = std::make_unique<llvm::LLVMContext>();
@@ -30,7 +36,6 @@ CodeGenContext::CodeGenContext() {
     PB.registerCGSCCAnalyses(*TheCGAM);
     PB.crossRegisterProxies(*TheLAM, *TheFAM, *TheCGAM, *TheMAM);
 
-#ifdef enable_optimize
     // 添加kaleidoscope教程中给的一些优化pass
     // Do simple "peephole" optimizations and bit-twiddling optzns.
     TheFPM->addPass(llvm::InstCombinePass());
@@ -43,7 +48,6 @@ CodeGenContext::CodeGenContext() {
 
     // 添加mem2reg的优化pass
     TheFPM->addPass(llvm::PromotePass());
-#endif
 
     // 添加目标二进制文件生成的配置
     // Initialize the target registry etc.

@@ -91,7 +91,8 @@ llvm::Value *DefinitionAst::gen_code(CodeGenContext &ctx) {
     ctx.Builder->CreateRet(retValue);
     llvm::verifyFunction(*fun);
     // 调用pass进行优化
-    ctx.TheFPM->run(*fun, *ctx.TheFAM);
+    if (std::getenv("DISABLE_OPT") == nullptr)
+        ctx.TheFPM->run(*fun, *ctx.TheFAM);
     ctx.ExitScope();
     // 结束创建ir
 

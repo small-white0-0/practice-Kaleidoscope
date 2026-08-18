@@ -84,9 +84,9 @@ int main() {
         mainLoop(stream, *ctx);
         ctx->TheDIBuilder->finalize();
         ctx->TheModule->print(llvm::outs(), nullptr); //print(llvm::outs());
-#ifdef gen_obj_file
-        ctx->genObjFile(std::string("code_out.o"));
-#endif
+        if (const auto output = std::getenv("OBJ_OUTPUT"); output) {
+            ctx->genObjFile(output);
+        }
     } catch (std::exception &e) {
         std::cerr << "报错信息：" << e.what() << "===================\n" << std::endl;
         return 1;
