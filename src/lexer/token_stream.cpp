@@ -91,8 +91,9 @@ Token TokenStream::nextToken() {
         next = Number{value, div, (std::move(loc))};
     } else {
         // 非空白的任意单个字符
+        const auto c = stream->next().value();
         auto loc = Location(std::move(start), stream->position());
-        next = Char{stream->next().value(), std::move(loc)};
+        next = Char{c, std::move(loc)};
     }
     assert(!std::holds_alternative<std::monostate>(next));
     last = std::move(cur);
